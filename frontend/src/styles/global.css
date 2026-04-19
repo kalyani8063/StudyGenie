@@ -1113,9 +1113,23 @@ textarea.field-input {
   gap: 4px;
 }
 
+.planner-task-main-static {
+  align-items: flex-start;
+}
+
+.planner-task-actions-wrap,
+.planner-day-summary {
+  flex-wrap: wrap;
+}
+
 .planner-task-main small,
 .planner-day-empty p {
   color: var(--muted);
+}
+
+.planner-day-summary {
+  display: flex;
+  gap: 10px;
 }
 
 .planner-day-empty {

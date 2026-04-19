@@ -52,7 +52,15 @@ function SessionTimerCard({
   subtitle = "Track a study block or break and save it automatically when the timer completes.",
   title = "Session timer",
 }) {
-  const { addBreakLog, addStudySession, studySessions } = useStudy();
+  const {
+    activeTimerTask,
+    addBreakLog,
+    addStudySession,
+    clearActiveTimerTask,
+    completeWeeklyTask,
+    studySessions,
+    weeklyPlans,
+  } = useStudy();
   const [timerMode, setTimerMode] = useState("focus");
   const [topic, setTopic] = useState("");
   const [selectedMinutes, setSelectedMinutes] = useState(25);
@@ -62,13 +70,23 @@ function SessionTimerCard({
   const [message, setMessage] = useState("");
   const [startedAt, setStartedAt] = useState(null);
   const [lastCompletedFocus, setLastCompletedFocus] = useState(null);
+  const [pausedFocusState, setPausedFocusState] = useState(null);
+
+  const activeTaskPlan =
+    weeklyPlans.find((plan) => plan.id === activeTimerTask?.planId) ?? null;
+  const activePlannedTask =
+    activeTaskPlan?.tasks.find((task) => task.id === activeTimerTask?.taskId) ?? null;
+  const activeTaskKey =
+    activeTaskPlan && activePlannedTask
+      ? `${activeTaskPlan.id}:${activePlannedTask.id}`
+      : "";
 
   const totalSeconds = selectedMinutes * 60;
   const elapsedSeconds = totalSeconds - secondsLeft;
   const progress = totalSeconds > 0 ? Math.round((elapsedSeconds / totalSeconds) * 100) : 0;
   const latestStudySession = studySessions[0] ?? null;
   const linkedSession = lastCompletedFocus ?? latestStudySession;
-  const linkedTopic = topic.trim() || linkedSession?.topic || "";
+  const linkedTopic = topic.trim() || linkedSession?.topic || pausedFocusState?.topic || "";
   const normalizedLinkedTopic = linkedSession?.topic?.trim().toLowerCase() ?? "";
   const canLinkBreakToSession =
     Boolean(linkedSession) &&
@@ -76,6 +94,8 @@ function SessionTimerCard({
   const trackedMinutes = getTrackedMinutes(elapsedSeconds, selectedMinutes);
   const targetLabel = `${selectedMinutes} min target`;
   const canSaveCurrentRun = Boolean(startedAt) && elapsedSeconds > 0;
+  const isGuidedTaskMode = Boolean(activePlannedTask);
+  const isTaskLocked = isGuidedTaskMode || Boolean(pausedFocusState);
 
   useEffect(() => {
     if (!isRunning) {
@@ -98,6 +118,43 @@ function SessionTimerCard({
     void handleCompletion();
   }, [isRunning, secondsLeft]);
 
+  useEffect(() => {
+    if (!activeTimerTask) {
+      return;
+    }
+
+    if (!activePlannedTask) {
+      clearActiveTimerTask();
+      return;
+    }
+
+    const taskMinutes = Math.max(1, Number(activePlannedTask.duration_minutes) || 25);
+
+    setTimerMode("focus");
+    setTopic(activePlannedTask.topic);
+    setSelectedMinutes(taskMinutes);
+    setSecondsLeft(taskMinutes * 60);
+    setStartedAt(new Date().toISOString());
+    setPausedFocusState(null);
+    setIsRunning(true);
+    setMessage(`Timer started for ${activePlannedTask.topic}. Use pause or take a break anytime.`);
+  }, [activeTaskKey]);
+
+  function restorePausedFocus(nextMessage) {
+    if (!pausedFocusState) {
+      return;
+    }
+
+    setTimerMode("focus");
+    setTopic(pausedFocusState.topic);
+    setSelectedMinutes(pausedFocusState.selectedMinutes);
+    setSecondsLeft(pausedFocusState.secondsLeft);
+    setStartedAt(pausedFocusState.startedAt);
+    setPausedFocusState(null);
+    setIsRunning(false);
+    setMessage(nextMessage);
+  }
+
   async function handleCompletion() {
     setIsSaving(true);
     setMessage("");
@@ -108,20 +165,39 @@ function SessionTimerCard({
       const completedAt = new Date().toISOString();
 
       if (timerMode === "focus") {
-        if (!topic.trim()) {
+        const resolvedTopic = activePlannedTask?.topic ?? topic.trim();
+
+        if (!resolvedTopic) {
           setMessage("Focus block finished. Add a topic so completed study sessions can be saved.");
           return;
         }
 
         const savedSession = await addStudySession({
-          topic: topic.trim(),
+          topic: resolvedTopic,
           time_spent: trackedMinutes,
           date: getLocalDateString(completedAt),
           started_at: effectiveStartedAt,
           ended_at: completedAt,
           source: "timer",
         });
-        setMessage(`Logged ${trackedMinutes} minute(s) of study for ${topic.trim()}.`);
+
+        if (activePlannedTask && activeTaskPlan) {
+          completeWeeklyTask(activeTaskPlan.id, activePlannedTask.id, {
+            actualMinutes: trackedMinutes,
+            completedAt,
+            studySessionId: savedSession.id,
+          });
+          setMessage(`Completed ${resolvedTopic} and logged ${trackedMinutes} minute(s).`);
+          setLastCompletedFocus(savedSession);
+          setTimerMode("focus");
+          setTopic("");
+          setSelectedMinutes(25);
+          setSecondsLeft(25 * 60);
+          setStartedAt(null);
+          return;
+        }
+
+        setMessage(`Logged ${trackedMinutes} minute(s) of study for ${resolvedTopic}.`);
         setLastCompletedFocus(savedSession);
         setTimerMode("break");
         setSelectedMinutes(5);
@@ -130,8 +206,9 @@ function SessionTimerCard({
         return;
       }
 
+      const breakTopic = pausedFocusState?.topic || linkedTopic || null;
       await addBreakLog({
-        topic: linkedTopic || null,
+        topic: breakTopic,
         duration_minutes: trackedMinutes,
         break_type: getBreakType(trackedMinutes),
         date: getLocalDateString(completedAt),
@@ -139,9 +216,19 @@ function SessionTimerCard({
         ended_at: completedAt,
         study_session_id: canLinkBreakToSession ? linkedSession?.id ?? null : null,
       });
+
+      if (pausedFocusState) {
+        restorePausedFocus(
+          breakTopic
+            ? `Break logged. Resume ${breakTopic} when you are ready.`
+            : "Break logged. Resume your study task when you are ready.",
+        );
+        return;
+      }
+
       setMessage(
-        linkedTopic
-          ? `Logged a ${trackedMinutes}-minute ${getBreakType(trackedMinutes)} break after ${linkedTopic}.`
+        breakTopic
+          ? `Logged a ${trackedMinutes}-minute ${getBreakType(trackedMinutes)} break after ${breakTopic}.`
           : `Logged a ${trackedMinutes}-minute ${getBreakType(trackedMinutes)} break for future planning insights.`,
       );
       setTimerMode("focus");
@@ -161,6 +248,10 @@ function SessionTimerCard({
   }
 
   function chooseMode(nextMode) {
+    if (isTaskLocked) {
+      return;
+    }
+
     const nextMinutes = TIMER_PRESETS[nextMode][0].minutes;
     setTimerMode(nextMode);
     setSelectedMinutes(nextMinutes);
@@ -171,6 +262,10 @@ function SessionTimerCard({
   }
 
   function choosePreset(minutes) {
+    if (isTaskLocked && timerMode === "focus") {
+      return;
+    }
+
     setSelectedMinutes(minutes);
     setSecondsLeft(minutes * 60);
     setIsRunning(false);
@@ -195,14 +290,42 @@ function SessionTimerCard({
     });
   }
 
+  function handleTimedBreak() {
+    if (timerMode !== "focus") {
+      return;
+    }
+
+    const nextMinutes = TIMER_PRESETS.break[0].minutes;
+    const pausedTopic = activePlannedTask?.topic ?? topic.trim();
+
+    setPausedFocusState({
+      selectedMinutes,
+      secondsLeft,
+      startedAt,
+      topic: pausedTopic,
+    });
+    setTimerMode("break");
+    setSelectedMinutes(nextMinutes);
+    setSecondsLeft(nextMinutes * 60);
+    setStartedAt(new Date().toISOString());
+    setIsRunning(true);
+    setMessage(
+      pausedTopic
+        ? `Break timer started. ${pausedTopic} is paused for now.`
+        : "Break timer started. Your focus timer is paused for now.",
+    );
+  }
+
   return (
     <Card className={`session-timer-card ${className}`.trim()} subtitle={subtitle} title={title}>
       <div className="timer-layout">
         <div className="timer-face timer-face-large">
-          <p className="timer-mode-label">{timerMode === "focus" ? "Study block" : "Break block"}</p>
+          <p className="timer-mode-label">
+            {timerMode === "focus" ? "Study block" : "Break block"}
+          </p>
           <span>{formatTime(secondsLeft)}</span>
           <p className="muted-copy">
-            Tracked {formatTime(elapsedSeconds)} - {targetLabel}
+            Tracked {formatTime(elapsedSeconds)} | {targetLabel}
           </p>
           <div className="progress-track timer-progress">
             <span style={{ width: `${progress}%` }} />
@@ -213,12 +336,14 @@ function SessionTimerCard({
         <div className="timer-controls">
           <div className="preset-row">
             <Button
+              disabled={isTaskLocked}
               onClick={() => chooseMode("focus")}
               variant={timerMode === "focus" ? "primary" : "ghost"}
             >
               Study timer
             </Button>
             <Button
+              disabled={isTaskLocked}
               onClick={() => chooseMode("break")}
               variant={timerMode === "break" ? "primary" : "ghost"}
             >
@@ -227,7 +352,12 @@ function SessionTimerCard({
           </div>
 
           <InputField
-            helper="Used when the timer saves the finished study block or links a break to the latest session."
+            disabled={isTaskLocked}
+            helper={
+              isGuidedTaskMode
+                ? "This timer is currently linked to a weekly planner task."
+                : "Used when the timer saves the finished study block or links a break to the latest session."
+            }
             label="Topic"
             placeholder="Physics revision"
             type="text"
@@ -238,6 +368,7 @@ function SessionTimerCard({
           <div className="preset-row">
             {TIMER_PRESETS[timerMode].map((preset) => (
               <Button
+                disabled={isTaskLocked && timerMode === "focus"}
                 key={`${timerMode}-${preset.minutes}`}
                 onClick={() => choosePreset(preset.minutes)}
                 variant={selectedMinutes === preset.minutes ? "secondary" : "ghost"}
@@ -270,19 +401,46 @@ function SessionTimerCard({
             >
               Reset
             </Button>
+            {timerMode === "focus" ? (
+              <Button disabled={isSaving} onClick={handleTimedBreak} variant="ghost">
+                Take break
+              </Button>
+            ) : null}
+            {timerMode === "break" && pausedFocusState ? (
+              <Button
+                disabled={isSaving}
+                onClick={() =>
+                  restorePausedFocus(
+                    pausedFocusState.topic
+                      ? `Back to ${pausedFocusState.topic}. Resume when you are ready.`
+                      : "Break closed. Resume your study task when you are ready.",
+                  )
+                }
+                variant="ghost"
+              >
+                Return to task
+              </Button>
+            ) : null}
           </div>
+
+          {isGuidedTaskMode ? (
+            <p className="muted-copy">
+              Completing this focus block will mark <strong>{activePlannedTask.topic}</strong> done
+              in your weekly planner and send it to weekly progress automatically.
+            </p>
+          ) : null}
 
           {timerMode === "break" && linkedTopic ? (
             <p className="muted-copy">
               This break will be saved against <strong>{linkedTopic}</strong> so your pacing data
-              stays tied to the study session it follows.
+              stays tied to the study session it follows when possible.
             </p>
           ) : null}
 
           <p className="timer-caption">
-            Completed focus blocks save to study sessions with tracked minutes and timestamps.
-            Completed breaks save with timestamps and stay linked to the session they follow so the
-            weekly planner can reuse your pacing history.
+            Planned tasks can launch this timer directly from the dashboard or tracker. Focus runs
+            save study sessions, timed breaks can pause an active task, and finished planned tasks
+            flow into the weekly progress view automatically.
           </p>
           {message ? <p className="success-message">{message}</p> : null}
         </div>

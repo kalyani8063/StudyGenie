@@ -4,6 +4,7 @@ import Card from "../components/Card.jsx";
 import EmptyState from "../components/EmptyState.jsx";
 import SessionTimerCard from "../components/SessionTimerCard.jsx";
 import StatCard from "../components/StatCard.jsx";
+import TodayPlannedTasksCard from "../components/TodayPlannedTasksCard.jsx";
 import StudyTimeCharts from "../components/charts/StudyTimeCharts.jsx";
 import Button from "../components/ui/Button.jsx";
 import InputField from "../components/ui/InputField.jsx";
@@ -135,6 +136,11 @@ function StudyTrackerPage() {
       <SessionTimerCard
         subtitle="Use the large timer here to track each study block, then log the break between sessions for better weekly planning."
         title="Study session timer"
+      />
+
+      <TodayPlannedTasksCard
+        emptyMessage="Create a weekly plan for this week and assign tasks to today if you want them to show up here."
+        title="Today's planner tasks"
       />
 
       <div className="stat-grid compact">

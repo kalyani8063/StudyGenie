@@ -1,7 +1,7 @@
 import { Link } from "react-router-dom";
 
 import Card from "../components/Card.jsx";
-import EmptyState from "../components/EmptyState.jsx";
+import TodayPlannedTasksCard from "../components/TodayPlannedTasksCard.jsx";
 import WeeklyStudyBarChart from "../components/charts/WeeklyStudyBarChart.jsx";
 import Badge from "../components/ui/Badge.jsx";
 import {
@@ -112,31 +112,12 @@ function DashboardPage() {
       </div>
 
       <div className="dashboard-grid">
-        <Card subtitle="Current week's remaining work" title="Upcoming tasks">
-          {activePlan?.tasks.length ? (
-            <div className="activity-list">
-              {activePlan.tasks
-                .filter((task) => !task.completed)
-                .slice(0, 4)
-                .map((task) => (
-                  <div className="activity-item" key={task.id}>
-                    <div>
-                      <strong>{task.topic}</strong>
-                      <span>
-                        {task.day.toUpperCase()} • {task.priority} priority
-                      </span>
-                    </div>
-                    <Badge tone="warning">{task.duration_minutes} min</Badge>
-                  </div>
-                ))}
-            </div>
-          ) : (
-            <EmptyState
-              title="No weekly tasks yet"
-              message="Create a weekly plan and add tasks to make the dashboard useful."
-            />
-          )}
-        </Card>
+        <TodayPlannedTasksCard
+          emptyMessage="No exact-date task from your weekly planner lands on today yet."
+          navigateToTracker
+          subtitle="Launch today's scheduled task directly into the study tracker timer."
+          title="Today's exact-date tasks"
+        />
 
         <Card subtitle="Keep momentum visible" title="Quick actions">
           <div className="next-action-card">

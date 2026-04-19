@@ -21,6 +21,7 @@ const defaultState = {
   breakLogs: [],
   weeklyPlans: [],
   activeWeeklyPlanId: null,
+  activeTimerTask: null,
   plannerProgress: {},
   darkMode: true,
 };
@@ -87,6 +88,8 @@ function normalizeWeeklyTask(task) {
     notes: task.notes ?? "",
     completed: Boolean(task.completed),
     completedAt: task.completedAt ?? null,
+    actualMinutes: task.actualMinutes != null ? Number(task.actualMinutes) : null,
+    linkedStudySessionId: task.linkedStudySessionId ?? null,
     createdAt: task.createdAt ?? new Date().toISOString(),
   };
 }
@@ -160,6 +163,7 @@ export function StudyProvider({ children }) {
           breakLogs: breakLogsResponse.data.map(normalizeBreakLog),
           weeklyPlans: storedState.weeklyPlans.map(normalizeWeeklyPlan),
           activeWeeklyPlanId: storedState.activeWeeklyPlanId,
+          activeTimerTask: storedState.activeTimerTask ?? null,
         }));
       } catch (error) {
         if (!isActive) {
@@ -332,6 +336,25 @@ export function StudyProvider({ children }) {
     }));
   }
 
+  function startWeeklyTaskTimer(planId, taskId) {
+    setState((current) => ({
+      ...current,
+      activeWeeklyPlanId: planId,
+      activeTimerTask: {
+        planId,
+        taskId,
+        launchedAt: new Date().toISOString(),
+      },
+    }));
+  }
+
+  function clearActiveTimerTask() {
+    setState((current) => ({
+      ...current,
+      activeTimerTask: null,
+    }));
+  }
+
   function addTaskToWeeklyPlan(planId, task) {
     let savedTask = null;
 
@@ -347,6 +370,8 @@ export function StudyProvider({ children }) {
           id: crypto.randomUUID(),
           completed: false,
           completedAt: null,
+          actualMinutes: null,
+          linkedStudySessionId: null,
           createdAt: new Date().toISOString(),
         });
 
@@ -364,6 +389,10 @@ export function StudyProvider({ children }) {
   function toggleWeeklyTask(planId, taskId) {
     setState((current) => ({
       ...current,
+      activeTimerTask:
+        current.activeTimerTask?.planId === planId && current.activeTimerTask?.taskId === taskId
+          ? null
+          : current.activeTimerTask,
       weeklyPlans: current.weeklyPlans.map((plan) => {
         if (plan.id !== planId) {
           return plan;
@@ -378,6 +407,45 @@ export function StudyProvider({ children }) {
                   ...task,
                   completed: !task.completed,
                   completedAt: !task.completed ? new Date().toISOString() : null,
+                  actualMinutes: !task.completed
+                    ? task.actualMinutes ?? Number(task.duration_minutes)
+                    : task.actualMinutes,
+                }
+              : task,
+          ),
+        };
+      }),
+    }));
+  }
+
+  function completeWeeklyTask(planId, taskId, completion = {}) {
+    const completedAt = completion.completedAt ?? new Date().toISOString();
+
+    setState((current) => ({
+      ...current,
+      activeTimerTask:
+        current.activeTimerTask?.planId === planId && current.activeTimerTask?.taskId === taskId
+          ? null
+          : current.activeTimerTask,
+      weeklyPlans: current.weeklyPlans.map((plan) => {
+        if (plan.id !== planId) {
+          return plan;
+        }
+
+        return {
+          ...plan,
+          updatedAt: new Date().toISOString(),
+          tasks: plan.tasks.map((task) =>
+            task.id === taskId
+              ? {
+                  ...task,
+                  completed: true,
+                  completedAt,
+                  actualMinutes:
+                    completion.actualMinutes != null
+                      ? Number(completion.actualMinutes)
+                      : task.actualMinutes ?? Number(task.duration_minutes),
+                  linkedStudySessionId: completion.studySessionId ?? task.linkedStudySessionId,
                 }
               : task,
           ),
@@ -389,6 +457,10 @@ export function StudyProvider({ children }) {
   function removeTaskFromWeeklyPlan(planId, taskId) {
     setState((current) => ({
       ...current,
+      activeTimerTask:
+        current.activeTimerTask?.planId === planId && current.activeTimerTask?.taskId === taskId
+          ? null
+          : current.activeTimerTask,
       weeklyPlans: current.weeklyPlans.map((plan) => {
         if (plan.id !== planId) {
           return plan;
@@ -434,6 +506,7 @@ export function StudyProvider({ children }) {
       history: state.history,
       studySessions: state.studySessions,
       breakLogs: state.breakLogs,
+      activeTimerTask: state.activeTimerTask,
       plannerProgress: state.plannerProgress,
       weeklyPlans: state.weeklyPlans,
       activeWeeklyPlanId: state.activeWeeklyPlanId,
@@ -449,8 +522,11 @@ export function StudyProvider({ children }) {
       addBreakLog,
       createWeeklyPlan,
       setActiveWeeklyPlan,
+      startWeeklyTaskTimer,
+      clearActiveTimerTask,
       addTaskToWeeklyPlan,
       toggleWeeklyTask,
+      completeWeeklyTask,
       removeTaskFromWeeklyPlan,
       togglePlanItem,
       toggleDarkMode,
