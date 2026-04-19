@@ -60,6 +60,9 @@ cover/
 local_settings.py
 db.sqlite3
 db.sqlite3-journal
+studygenie.db
+studygenie.db-journal
+model.pkl
 
 # Flask stuff:
 instance/
@@ -137,6 +140,7 @@ celerybeat.pid
 # Environments
 .env
 .envrc
+.tmp/
 .venv
 env/
 venv/
@@ -193,6 +197,13 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
+
+# Frontend
+node_modules/
+dist/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
 
 # Cursor
 #  Cursor is an AI-powered code editor. `.cursorignore` specifies files/directories to
