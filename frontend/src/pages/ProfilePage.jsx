@@ -10,7 +10,7 @@ import { useStudy } from "../state/StudyContext.jsx";
 
 function ProfilePage() {
   const { refreshProfile, saveProfile, user } = useAuth();
-  const { history, studySessions } = useStudy();
+  const { currentRecommendation, studySessions, weeklyPlans } = useStudy();
   const [formData, setFormData] = useState({
     full_name: "",
     age: "",
@@ -74,8 +74,17 @@ function ProfilePage() {
       </div>
 
       <div className="stat-grid compact">
-        <StatCard label="Saved Results" value={history.length} helper="Recommendation history" />
+        <StatCard
+          label="Study Weeks"
+          value={weeklyPlans.length}
+          helper="Weekly plans saved to your account"
+        />
         <StatCard label="Study Time" value={`${totalStudyTime} min`} helper="Logged sessions" />
+        <StatCard
+          label="Current Signal"
+          value={currentRecommendation?.result.level ?? "--"}
+          helper="Latest recommendation level"
+        />
       </div>
 
       <Card subtitle="Keep your profile current across the workspace." title="Personal details">

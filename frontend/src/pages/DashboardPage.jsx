@@ -1,12 +1,15 @@
 import { Link } from "react-router-dom";
 
 import Card from "../components/Card.jsx";
+import EmptyState from "../components/EmptyState.jsx";
+import RecommendationCard from "../components/RecommendationCard.jsx";
 import TodayPlannedTasksCard from "../components/TodayPlannedTasksCard.jsx";
 import WeeklyStudyBarChart from "../components/charts/WeeklyStudyBarChart.jsx";
 import Badge from "../components/ui/Badge.jsx";
 import {
   formatWeekLabel,
   generateWeeklyRecommendation,
+  getPlanForDate,
   getWeeklyPlanStats,
 } from "../lib/weeklyPlanner.js";
 import { useAuth } from "../state/AuthContext.jsx";
@@ -27,9 +30,13 @@ function getStreak(sessions) {
 
 function DashboardPage() {
   const { user } = useAuth();
-  const { activeWeeklyPlanId, studySessions, weeklyPlans } = useStudy();
+  const { activeWeeklyPlanId, currentRecommendation, recommendationMeta, studySessions, weeklyPlans } =
+    useStudy();
   const activePlan =
-    weeklyPlans.find((plan) => plan.id === activeWeeklyPlanId) ?? weeklyPlans[0] ?? null;
+    weeklyPlans.find((plan) => plan.id === activeWeeklyPlanId) ??
+    getPlanForDate(weeklyPlans) ??
+    weeklyPlans[0] ??
+    null;
   const totalStudyTime = studySessions.reduce(
     (total, session) => total + Number(session.time_spent),
     0,
@@ -45,11 +52,11 @@ function DashboardPage() {
           <p className="eyebrow">StudyGenie overview</p>
           <h2>
             Welcome back{user?.full_name ? `, ${user.full_name.split(" ")[0]}` : ""}. Your
-            weekly plan is the control center now.
+            study flow is live now.
           </h2>
           <p className="muted-copy">
-            Map the week, track completed tasks, and use rule-based guidance to decide the
-            next study block.
+            Build a week, log real sessions, and let the dashboard update your totals,
+            progress, and recommendation as you go.
           </p>
           <div className="cta-row">
             <Link className="landing-primary-link" to="/recommendation">
@@ -61,9 +68,19 @@ function DashboardPage() {
           </div>
         </div>
         <div className="dashboard-hero-panel">
-          <p className="section-label">Next study move</p>
-          <h3>{recommendation.title}</h3>
-          <p>{recommendation.recommendation}</p>
+          {currentRecommendation ? (
+            <>
+              <p className="section-label">Next study move</p>
+              <h3>{currentRecommendation.result.level}</h3>
+              <p>{currentRecommendation.result.recommendation}</p>
+            </>
+          ) : (
+            <>
+              <p className="section-label">Next study move</p>
+              <h3>Start your first session</h3>
+              <p>Once you log study time, the dashboard will surface a live recommendation here.</p>
+            </>
+          )}
         </div>
       </div>
 
@@ -94,21 +111,21 @@ function DashboardPage() {
 
       <div className="dashboard-grid">
         <Card subtitle="Last 7 days" title="Weekly study time">
-          <WeeklyStudyBarChart sessions={studySessions} />
+          {studySessions.length > 0 ? (
+            <WeeklyStudyBarChart sessions={studySessions} />
+          ) : (
+            <EmptyState
+              title="No chart data yet"
+              message="Start your first study session to see the weekly graph fill in."
+            />
+          )}
         </Card>
 
-        <Card subtitle="Current rule-based recommendation" title="Weekly planner signal">
-          <div className="next-action-card">
-            <p>{recommendation.reason}</p>
-            {activePlan ? (
-              <div className="pill-row">
-                <span className="topic-pill">{stats.completedCount} complete</span>
-                <span className="topic-pill">{stats.overdueCount} overdue</span>
-                <span className="topic-pill">{stats.loggedMinutes} logged min</span>
-              </div>
-            ) : null}
-          </div>
-        </Card>
+        <RecommendationCard
+          entry={currentRecommendation}
+          isLoading={recommendationMeta.isLoading}
+          title="Live study recommendation"
+        />
       </div>
 
       <div className="dashboard-grid">
@@ -121,7 +138,11 @@ function DashboardPage() {
 
         <Card subtitle="Keep momentum visible" title="Quick actions">
           <div className="next-action-card">
-            <p>{recommendation.recommendation}</p>
+            <p>
+              {studySessions.length > 0
+                ? recommendation.recommendation
+                : "Start your first study session to turn on live dashboard insights."}
+            </p>
             <div className="cta-row">
               <Link className="landing-primary-link" to="/recommendation">
                 Open weekly planner
@@ -133,6 +154,7 @@ function DashboardPage() {
           </div>
         </Card>
       </div>
+      {recommendationMeta.error ? <p className="error-message">{recommendationMeta.error}</p> : null}
     </section>
   );
 }

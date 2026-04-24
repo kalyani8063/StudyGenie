@@ -12,9 +12,9 @@ const levelLabels = {
   strong: "Strong",
 };
 
-function RecommendationCard({ onSave, result, saveDisabled = false }) {
-  const level = result?.level ?? "medium";
+function RecommendationCard({ entry, isLoading = false, title = "Study recommendation" }) {
   const [isOpen, setIsOpen] = useState(false);
+  const level = entry?.result?.level ?? "medium";
   const tone = useMemo(() => {
     if (["critical", "struggling", "weak"].includes(level)) return "danger";
     if (["medium", "low_engagement"].includes(level)) return "warning";
@@ -22,33 +22,70 @@ function RecommendationCard({ onSave, result, saveDisabled = false }) {
     return "default";
   }, [level]);
 
+  if (!entry) {
+    return (
+      <article className="recommendation-card">
+        <div className="recommendation-header">
+          <div className="card-header">
+            <span className="card-icon">SG</span>
+            <div>
+              <p className="section-label">Recommendation</p>
+              <h3 className="recommendation-heading">{title}</h3>
+            </div>
+          </div>
+          <Badge tone="default">Waiting</Badge>
+        </div>
+
+        <section className="recommendation-section">
+          <p className="recommendation-text">
+            Start your first study session or complete a planned task to generate a recommendation.
+          </p>
+        </section>
+      </article>
+    );
+  }
+
   return (
     <article className="recommendation-card">
       <div className="recommendation-header">
         <div className="card-header">
-          <span className="card-icon">AI</span>
+          <span className="card-icon">SG</span>
           <div>
             <p className="section-label">Recommendation</p>
-            <h3 className="recommendation-heading">Priority review</h3>
+            <h3 className="recommendation-heading">{title}</h3>
           </div>
         </div>
 
-        <Badge tone={tone}>{levelLabels[level] ?? level}</Badge>
+        <Badge tone={tone}>
+          {isLoading ? "Refreshing" : levelLabels[level] ?? level}
+        </Badge>
       </div>
 
       <section className="recommendation-section">
         <p className="section-label">Action</p>
-        <p className="recommendation-text">{result.recommendation}</p>
+        <p className="recommendation-text">{entry.result.recommendation}</p>
       </section>
 
-      <div className="recommendation-divider" />
+      <div className="planner-metric-grid">
+        <div className="planner-metric">
+          <span className="section-label">Topic</span>
+          <strong>{entry.metrics.topic}</strong>
+        </div>
+        <div className="planner-metric">
+          <span className="section-label">Progress score</span>
+          <strong>{entry.metrics.score}%</strong>
+        </div>
+        <div className="planner-metric">
+          <span className="section-label">Attempts</span>
+          <strong>{entry.metrics.attempts}</strong>
+        </div>
+        <div className="planner-metric">
+          <span className="section-label">Tracked time</span>
+          <strong>{entry.metrics.time_spent} min</strong>
+        </div>
+      </div>
 
       <div className="recommendation-actions">
-        {onSave ? (
-          <Button onClick={onSave} size="sm" variant="secondary" disabled={saveDisabled}>
-            Save recommendation
-          </Button>
-        ) : null}
         <Button
           aria-expanded={isOpen}
           onClick={() => setIsOpen((current) => !current)}
@@ -62,7 +99,7 @@ function RecommendationCard({ onSave, result, saveDisabled = false }) {
       {isOpen ? (
         <section className="recommendation-section recommendation-reason">
           <p className="section-label">Reasoning</p>
-          <p className="reason-text">{result.reason}</p>
+          <p className="reason-text">{entry.result.reason}</p>
         </section>
       ) : null}
     </article>

@@ -5,17 +5,21 @@ import json
 import os
 import secrets
 import time
+from pathlib import Path
 from typing import Any
 
 from fastapi import Depends, Header, HTTPException, status
+from dotenv import load_dotenv
 from sqlalchemy.orm import Session
 
-try:
+if __package__:
     from .database import get_db
     from .models import User
-except ImportError:
+else:
     from database import get_db
     from models import User
+
+load_dotenv(Path(__file__).resolve().parent / ".env")
 
 SECRET_KEY = os.getenv("STUDYGENIE_SECRET_KEY", "studygenie-dev-secret")
 TOKEN_EXPIRY_SECONDS = 60 * 60 * 24

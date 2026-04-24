@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 
 import Card from "../components/Card.jsx";
 import EmptyState from "../components/EmptyState.jsx";
+import RecommendationCard from "../components/RecommendationCard.jsx";
 import Badge from "../components/ui/Badge.jsx";
 import Button from "../components/ui/Button.jsx";
 import InputField from "../components/ui/InputField.jsx";
@@ -41,7 +42,9 @@ function RecommendationPage() {
     activeWeeklyPlanId,
     addTaskToWeeklyPlan,
     createWeeklyPlan,
+    currentRecommendation,
     removeTaskFromWeeklyPlan,
+    recommendationMeta,
     setActiveWeeklyPlan,
     studySessions,
     toggleWeeklyTask,
@@ -104,10 +107,18 @@ function RecommendationPage() {
 
   function handleAddTask(event) {
     event.preventDefault();
+    let planForTask = activePlan;
 
-    if (!activePlan) {
-      setTaskError("Create or open a weekly plan before adding tasks.");
-      return;
+    if (!planForTask) {
+      planForTask = createWeeklyPlan({
+        title: weekMeta.title || "My study week",
+        weekStart: getWeekStart(),
+      });
+      setActiveWeeklyPlan(planForTask.id);
+      setWeekMeta({
+        title: planForTask.title,
+        weekStart: planForTask.weekStart,
+      });
     }
 
     if (!taskDraft.topic.trim()) {
@@ -120,7 +131,7 @@ function RecommendationPage() {
       return;
     }
 
-    addTaskToWeeklyPlan(activePlan.id, {
+    addTaskToWeeklyPlan(planForTask.id, {
       topic: taskDraft.topic.trim(),
       day: taskDraft.day,
       duration_minutes: Number(taskDraft.duration_minutes),
@@ -145,7 +156,7 @@ function RecommendationPage() {
 
       <div className="recommendation-grid">
         <Card
-          subtitle="Start a week first, then keep adding topic blocks to the right days."
+          subtitle="Create a week once, then keep dropping task blocks into the right days."
           title="Plan setup"
         >
           <div className="input-form">
@@ -182,8 +193,8 @@ function RecommendationPage() {
         </Card>
 
         <Card
-          subtitle="This recommendation updates automatically from your weekly plan and progress."
-          title="Rule-based recommendation"
+          subtitle="This guidance comes from weekly workload and completion status."
+          title="Weekly planner signal"
           action={<Badge tone={recommendation.tone}>{recommendation.title}</Badge>}
         >
           <div className="recommendation-card planner-recommendation-card">
@@ -221,6 +232,13 @@ function RecommendationPage() {
         </Card>
       </div>
 
+      <RecommendationCard
+        entry={currentRecommendation}
+        isLoading={recommendationMeta.isLoading}
+        title="Live study recommendation"
+      />
+      {recommendationMeta.error ? <p className="error-message">{recommendationMeta.error}</p> : null}
+
       <Card
         subtitle="Switch between saved weeks and keep progress separate for each one."
         title="Your study weeks"
@@ -250,83 +268,83 @@ function RecommendationPage() {
           subtitle={
             activePlan
               ? `Add tasks to ${activePlan.title} and spread them across the week.`
-              : "Create a week first so tasks have somewhere to go."
+              : "Add your first task and StudyGenie will create a week for you automatically."
           }
           title="Add weekly task"
         >
-          {activePlan ? (
-            <form className="input-form" onSubmit={handleAddTask}>
+          <form className="input-form" onSubmit={handleAddTask}>
+            <InputField
+              label="Task or topic"
+              name="topic"
+              placeholder="Calculus derivatives practice"
+              type="text"
+              value={taskDraft.topic}
+              onChange={handleTaskChange}
+            />
+
+            <div className="form-grid">
+              <label className="field">
+                <span className="field-label">Day</span>
+                <select
+                  className="field-input"
+                  name="day"
+                  value={taskDraft.day}
+                  onChange={handleTaskChange}
+                >
+                  {DAY_OPTIONS.map((day) => (
+                    <option key={day.value} value={day.value}>
+                      {day.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
               <InputField
-                label="Task or topic"
-                name="topic"
-                placeholder="Calculus derivatives practice"
-                type="text"
-                value={taskDraft.topic}
+                label="Duration"
+                min="15"
+                name="duration_minutes"
+                placeholder="45"
+                type="number"
+                value={taskDraft.duration_minutes}
                 onChange={handleTaskChange}
               />
+            </div>
 
-              <div className="form-grid">
-                <label className="field">
-                  <span className="field-label">Day</span>
-                  <select
-                    className="field-input"
-                    name="day"
-                    value={taskDraft.day}
-                    onChange={handleTaskChange}
-                  >
-                    {DAY_OPTIONS.map((day) => (
-                      <option key={day.value} value={day.value}>
-                        {day.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-
-                <InputField
-                  label="Duration"
-                  min="15"
-                  name="duration_minutes"
-                  placeholder="45"
-                  type="number"
-                  value={taskDraft.duration_minutes}
+            <div className="form-grid">
+              <label className="field">
+                <span className="field-label">Priority</span>
+                <select
+                  className="field-input"
+                  name="priority"
+                  value={taskDraft.priority}
                   onChange={handleTaskChange}
-                />
-              </div>
+                >
+                  <option value="high">High</option>
+                  <option value="medium">Medium</option>
+                  <option value="light">Light</option>
+                </select>
+              </label>
 
-              <div className="form-grid">
-                <label className="field">
-                  <span className="field-label">Priority</span>
-                  <select
-                    className="field-input"
-                    name="priority"
-                    value={taskDraft.priority}
-                    onChange={handleTaskChange}
-                  >
-                    <option value="high">High</option>
-                    <option value="medium">Medium</option>
-                    <option value="light">Light</option>
-                  </select>
-                </label>
+              <InputField
+                label="Notes"
+                multiline
+                name="notes"
+                placeholder="Focus on word problems and past mistakes."
+                value={taskDraft.notes}
+                onChange={handleTaskChange}
+              />
+            </div>
 
-                <InputField
-                  label="Notes"
-                  multiline
-                  name="notes"
-                  placeholder="Focus on word problems and past mistakes."
-                  value={taskDraft.notes}
-                  onChange={handleTaskChange}
-                />
-              </div>
+            {!activePlan ? (
+              <p className="field-helper">
+                No week is open yet. Saving this task will create a week starting on the current
+                Monday.
+              </p>
+            ) : null}
 
-              <Button type="submit">Add task</Button>
-              {taskError ? <p className="error-message">{taskError}</p> : null}
-            </form>
-          ) : (
-            <EmptyState
-              title="No active week"
-              message="Create or open a week above, then you can start adding study tasks."
-            />
-          )}
+            <Button type="submit">{activePlan ? "Add task" : "Create week and add task"}</Button>
+            {taskError ? <p className="error-message">{taskError}</p> : null}
+          </form>
         </Card>
 
         <Card

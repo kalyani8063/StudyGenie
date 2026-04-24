@@ -62,6 +62,10 @@ db.sqlite3
 db.sqlite3-journal
 studygenie.db
 studygenie.db-journal
+studygenie-local.db
+studygenie-local.db-journal
+backend/studygenie-local.db
+backend/studygenie-local.db-journal
 model.pkl
 
 # Flask stuff:

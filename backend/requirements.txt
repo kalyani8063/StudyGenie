@@ -1,7 +1,8 @@
 fastapi
 uvicorn
-scikit-learn
-pandas
-numpy
-joblib
 sqlalchemy
+alembic
+psycopg[binary]
+python-dotenv
+python-multipart
+python-pptx

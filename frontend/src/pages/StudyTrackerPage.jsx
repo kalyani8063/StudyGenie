@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import Card from "../components/Card.jsx";
 import EmptyState from "../components/EmptyState.jsx";
@@ -24,10 +24,24 @@ const initialSession = {
   date: getLocalDateString(),
 };
 
+const TRACKER_FORM_KEY = "studygenie-tracker-form";
+const TRACKER_FILTERS_KEY = "studygenie-tracker-filters";
+
+function readStoredValue(storageKey, fallbackValue) {
+  try {
+    const stored = localStorage.getItem(storageKey);
+    return stored ? { ...fallbackValue, ...JSON.parse(stored) } : fallbackValue;
+  } catch {
+    return fallbackValue;
+  }
+}
+
 function StudyTrackerPage() {
   const { addStudySession, breakLogs, studySessions } = useStudy();
-  const [session, setSession] = useState(initialSession);
-  const [filters, setFilters] = useState({ topic: "", date: "" });
+  const [session, setSession] = useState(() => readStoredValue(TRACKER_FORM_KEY, initialSession));
+  const [filters, setFilters] = useState(() =>
+    readStoredValue(TRACKER_FILTERS_KEY, { topic: "", date: "" }),
+  );
   const [error, setError] = useState("");
   const [isSaving, setIsSaving] = useState(false);
   const totalTime = studySessions.reduce(
@@ -54,6 +68,14 @@ function StudyTrackerPage() {
     const matchesDate = filters.date ? item.date === filters.date : true;
     return matchesTopic && matchesDate;
   });
+
+  useEffect(() => {
+    localStorage.setItem(TRACKER_FORM_KEY, JSON.stringify(session));
+  }, [session]);
+
+  useEffect(() => {
+    localStorage.setItem(TRACKER_FILTERS_KEY, JSON.stringify(filters));
+  }, [filters]);
 
   function handleChange(event) {
     const { name, value } = event.target;
@@ -119,6 +141,7 @@ function StudyTrackerPage() {
         date: session.date,
       });
       setSession(initialSession);
+      localStorage.removeItem(TRACKER_FORM_KEY);
     } catch {
       setError("Could not save the study session.");
     } finally {

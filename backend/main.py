@@ -1,10 +1,14 @@
+import logging
+import sys
+from contextlib import asynccontextmanager
 from datetime import date, timedelta
+from importlib import import_module
 
-from fastapi import Depends, FastAPI, HTTPException, status
+from fastapi import Depends, FastAPI, File, HTTPException, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
-try:
+if __package__:
     from .auth import (
         create_access_token,
         get_current_user,
@@ -12,25 +16,34 @@ try:
         hash_password,
         verify_password,
     )
-    from .ai_engine import generate_recommendation
-    from .database import Base, engine, get_db, migrate_database
-    from .models import BreakLog, SavedRecommendation, StudentPerformance, StudySession, User
+    from .ai_engine import StudyAgent
+    from .database import (
+        PROJECT_ROOT,
+        USING_SQLITE,
+        get_db,
+        initialize_database_schema,
+        validate_database_connection,
+    )
+    from .models import BreakLog, StudentPerformance, StudySession, User, WeeklyPlan, WeeklyTask
+    from .study_tools import build_lesson_summary_from_presentation
     from .schemas import (
         AuthResponse,
         BreakLogCreate,
         BreakLogResponse,
+        PresentationLessonSummaryResponse,
         RecommendationRequest,
         RecommendationResponse,
-        SavedRecommendationCreate,
-        SavedRecommendationItem,
         StudySessionCreate,
         StudySessionResponse,
         UserCreate,
         UserLogin,
         UserProfileUpdate,
         UserResponse,
+        WeeklyPlansState,
+        WeeklyPlanPayload,
+        WeeklyTaskPayload,
     )
-except ImportError:
+else:
     from auth import (
         create_access_token,
         get_current_user,
@@ -38,66 +51,104 @@ except ImportError:
         hash_password,
         verify_password,
     )
-    from ai_engine import generate_recommendation
-    from database import Base, engine, get_db, migrate_database
-    from models import BreakLog, SavedRecommendation, StudentPerformance, StudySession, User
+    from ai_engine import StudyAgent
+    from database import (
+        PROJECT_ROOT,
+        USING_SQLITE,
+        get_db,
+        initialize_database_schema,
+        validate_database_connection,
+    )
+    from models import BreakLog, StudentPerformance, StudySession, User, WeeklyPlan, WeeklyTask
+    from study_tools import build_lesson_summary_from_presentation
     from schemas import (
         AuthResponse,
         BreakLogCreate,
         BreakLogResponse,
+        PresentationLessonSummaryResponse,
         RecommendationRequest,
         RecommendationResponse,
-        SavedRecommendationCreate,
-        SavedRecommendationItem,
         StudySessionCreate,
         StudySessionResponse,
         UserCreate,
         UserLogin,
         UserProfileUpdate,
         UserResponse,
+        WeeklyPlansState,
+        WeeklyPlanPayload,
+        WeeklyTaskPayload,
     )
 
-# Create database tables for this prototype.
-# In a larger project, migrations such as Alembic would usually handle this.
-Base.metadata.create_all(bind=engine)
-migrate_database()
+logger = logging.getLogger(__name__)
+
+
+def load_alembic_runtime():
+    """Import the installed Alembic package without the local script folder shadowing it."""
+    original_path = list(sys.path)
+    filtered_path = [
+        entry
+        for entry in original_path
+        if entry not in {"", str(PROJECT_ROOT)}
+    ]
+
+    try:
+        sys.path[:] = filtered_path
+        for module_name in list(sys.modules):
+            if module_name == "alembic" or module_name.startswith("alembic."):
+                sys.modules.pop(module_name, None)
+
+        alembic_command = import_module("alembic.command")
+        alembic_config = import_module("alembic.config")
+        return alembic_command, alembic_config.Config
+    finally:
+        sys.path[:] = original_path
+
+
+def run_migrations() -> None:
+    """Apply all pending Alembic migrations before serving requests."""
+    try:
+        alembic_command, alembic_config_class = load_alembic_runtime()
+        alembic_ini_path = PROJECT_ROOT / "alembic.ini"
+        alembic_cfg = alembic_config_class(str(alembic_ini_path))
+        alembic_cfg.set_main_option("script_location", str(PROJECT_ROOT / "alembic"))
+        alembic_command.upgrade(alembic_cfg, "head")
+        logger.info("Alembic migrations applied successfully.")
+    except Exception:
+        logger.exception("Alembic migration run failed.")
+        raise
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    validate_database_connection()
+    if USING_SQLITE:
+        initialize_database_schema()
+    else:
+        run_migrations()
+    yield
 
 app = FastAPI(
-    title="AI-Driven Study Recommendation System",
-    description="A simple FastAPI prototype for study recommendations.",
+    title="StudyGenie",
+    description="Study planning, session tracking, and rule-based recommendations.",
     version="1.0.0",
+    lifespan=lifespan,
 )
+
+LOCAL_DEV_ORIGINS = [
+    "http://127.0.0.1:5173",
+    "http://localhost:5173",
+    "http://127.0.0.1:4173",
+    "http://localhost:4173",
+]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://127.0.0.1:5173",
-        "http://localhost:5173",
-    ],
+    allow_origins=LOCAL_DEV_ORIGINS,
+    allow_origin_regex=r"https?://(localhost|127\.0\.0\.1|\[::1\])(?::\d+)?$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-
-def serialize_saved_recommendation(item: SavedRecommendation) -> SavedRecommendationItem:
-    """Return the nested response shape expected by the frontend."""
-    return SavedRecommendationItem(
-        id=item.id,
-        metrics=RecommendationRequest(
-            topic=item.topic,
-            score=item.score,
-            attempts=item.attempts,
-            time_spent=item.time_spent,
-        ),
-        result=RecommendationResponse(
-            level=item.level,
-            recommendation=item.recommendation,
-            reason=item.reason,
-        ),
-        savedAt=item.created_at,
-    )
-
 
 def summarize_break_logs(
     current_user: User | None,
@@ -137,10 +188,111 @@ def summarize_break_logs(
     }
 
 
+def lookup_previous_score(
+    current_user: User | None,
+    db: Session,
+    topic: str,
+) -> float | None:
+    """Return the previous saved score snapshot for this topic when available."""
+    if current_user is None:
+        return None
+
+    previous_entry = (
+        db.query(StudentPerformance)
+        .filter(StudentPerformance.user_id == current_user.id)
+        .filter(StudentPerformance.topic == topic.strip())
+        .order_by(StudentPerformance.id.desc())
+        .first()
+    )
+    return float(previous_entry.score) if previous_entry else None
+
+
+def serialize_weekly_task(task: WeeklyTask) -> WeeklyTaskPayload:
+    return WeeklyTaskPayload(
+        id=task.id,
+        topic=task.topic,
+        day=task.day,
+        duration_minutes=task.duration_minutes,
+        priority=task.priority,
+        notes=task.notes,
+        completed=task.completed,
+        completed_at=task.completed_at,
+        actual_minutes=task.actual_minutes,
+        linked_study_session_id=task.linked_study_session_id,
+        created_at=task.created_at,
+        updated_at=task.updated_at,
+    )
+
+
+def serialize_weekly_plan(plan: WeeklyPlan) -> WeeklyPlanPayload:
+    return WeeklyPlanPayload(
+        id=plan.id,
+        title=plan.title,
+        week_start=plan.week_start,
+        created_at=plan.created_at,
+        updated_at=plan.updated_at,
+        tasks=[serialize_weekly_task(task) for task in plan.tasks],
+    )
+
+
+def load_weekly_plans(db: Session, user_id: int) -> list[WeeklyPlan]:
+    return (
+        db.query(WeeklyPlan)
+        .options(selectinload(WeeklyPlan.tasks))
+        .filter(WeeklyPlan.user_id == user_id)
+        .order_by(WeeklyPlan.week_start.desc(), WeeklyPlan.updated_at.desc(), WeeklyPlan.id.desc())
+        .all()
+    )
+
+
+def build_weekly_state(current_user: User, db: Session) -> WeeklyPlansState:
+    plans = load_weekly_plans(db, current_user.id)
+    known_plan_ids = {plan.id for plan in plans}
+    active_plan_id = current_user.active_weekly_plan_id
+
+    if active_plan_id not in known_plan_ids:
+        active_plan_id = plans[0].id if plans else None
+
+    return WeeklyPlansState(
+        active_weekly_plan_id=active_plan_id,
+        plans=[serialize_weekly_plan(plan) for plan in plans],
+    )
+
+
 @app.get("/")
 def read_root() -> dict[str, str]:
     """Health check endpoint."""
     return {"message": "API running"}
+
+
+@app.post("/lessons/presentation-summary", response_model=PresentationLessonSummaryResponse)
+async def summarize_presentation_lesson(
+    presentation: UploadFile = File(...),
+) -> PresentationLessonSummaryResponse:
+    """Read a PPTX lesson deck and return a structured main-points summary."""
+    filename = (presentation.filename or "").lower()
+    content_type = presentation.content_type or ""
+    valid_content_types = {
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        "application/octet-stream",
+    }
+
+    if not filename.endswith(".pptx") and content_type not in valid_content_types:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Please upload a .pptx PowerPoint deck.",
+        )
+
+    contents = await presentation.read()
+
+    try:
+        result = build_lesson_summary_from_presentation(contents)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+
+    return PresentationLessonSummaryResponse(**result)
 
 
 @app.post("/auth/register", response_model=AuthResponse, status_code=status.HTTP_201_CREATED)
@@ -212,15 +364,149 @@ def update_profile(
     return current_user
 
 
+@app.get("/weekly-plans", response_model=WeeklyPlansState)
+def read_weekly_plans(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> WeeklyPlansState:
+    """Return the authenticated user's saved weekly planner state."""
+    return build_weekly_state(current_user, db)
+
+
+@app.put("/weekly-plans/sync", response_model=WeeklyPlansState)
+def sync_weekly_plans(
+    payload: WeeklyPlansState,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> WeeklyPlansState:
+    """Upsert the full weekly planner snapshot for the current user."""
+    existing_plans = {
+        plan.id: plan for plan in load_weekly_plans(db, current_user.id)
+    }
+    incoming_plan_ids = {plan.id for plan in payload.plans}
+    linked_session_ids = {
+        task.linked_study_session_id
+        for plan in payload.plans
+        for task in plan.tasks
+        if task.linked_study_session_id is not None
+    }
+
+    allowed_linked_session_ids = {
+        item[0]
+        for item in (
+            db.query(StudySession.id)
+            .filter(StudySession.user_id == current_user.id)
+            .filter(StudySession.id.in_(linked_session_ids))
+            .all()
+            if linked_session_ids
+            else []
+        )
+    }
+
+    for plan_payload in payload.plans:
+        existing_plan = existing_plans.get(plan_payload.id)
+
+        if existing_plan is None:
+            existing_plan = WeeklyPlan(
+                id=plan_payload.id,
+                user_id=current_user.id,
+            )
+            db.add(existing_plan)
+
+        existing_plan.title = plan_payload.title.strip() or f"Week of {plan_payload.week_start}"
+        existing_plan.week_start = plan_payload.week_start
+
+        if plan_payload.created_at is not None and existing_plan.created_at is None:
+            existing_plan.created_at = plan_payload.created_at
+        if plan_payload.updated_at is not None:
+            existing_plan.updated_at = plan_payload.updated_at
+
+        existing_tasks = {task.id: task for task in existing_plan.tasks}
+        incoming_task_ids = {task.id for task in plan_payload.tasks}
+
+        for task_payload in plan_payload.tasks:
+            existing_task = existing_tasks.get(task_payload.id)
+
+            if existing_task is None:
+                existing_task = WeeklyTask(
+                    id=task_payload.id,
+                    plan=existing_plan,
+                )
+                db.add(existing_task)
+
+            existing_task.topic = task_payload.topic.strip()
+            existing_task.day = task_payload.day
+            existing_task.duration_minutes = task_payload.duration_minutes
+            existing_task.priority = task_payload.priority
+            existing_task.notes = task_payload.notes.strip() if task_payload.notes else None
+            existing_task.completed = task_payload.completed
+            existing_task.completed_at = task_payload.completed_at
+            existing_task.actual_minutes = task_payload.actual_minutes
+            existing_task.linked_study_session_id = (
+                task_payload.linked_study_session_id
+                if task_payload.linked_study_session_id in allowed_linked_session_ids
+                else None
+            )
+            if task_payload.created_at is not None and existing_task.created_at is None:
+                existing_task.created_at = task_payload.created_at
+            if task_payload.updated_at is not None:
+                existing_task.updated_at = task_payload.updated_at
+
+        for existing_task in list(existing_plan.tasks):
+            if existing_task.id not in incoming_task_ids:
+                db.delete(existing_task)
+
+    for existing_plan in existing_plans.values():
+        if existing_plan.id not in incoming_plan_ids:
+            db.delete(existing_plan)
+
+    current_user.active_weekly_plan_id = (
+        payload.active_weekly_plan_id
+        if payload.active_weekly_plan_id in incoming_plan_ids
+        else (payload.plans[0].id if payload.plans else None)
+    )
+
+    db.add(current_user)
+    db.commit()
+    db.refresh(current_user)
+
+    return build_weekly_state(current_user, db)
+
+
 @app.post("/recommend", response_model=RecommendationResponse)
 def recommend(
     request: RecommendationRequest,
     db: Session = Depends(get_db),
     current_user: User | None = Depends(get_optional_user),
 ) -> RecommendationResponse:
-    """Save student performance data and return a study recommendation."""
+    """Save a progress snapshot and return a rule-based study recommendation."""
+    normalized_topic = request.topic.strip()
+    previous_score = lookup_previous_score(current_user, db, normalized_topic)
+    break_summary = summarize_break_logs(current_user, db, normalized_topic)
+    normalized_request = RecommendationRequest(
+        topic=normalized_topic,
+        score=request.score,
+        attempts=request.attempts,
+        time_spent=request.time_spent,
+        recent_break_count=request.recent_break_count,
+        average_break_minutes=request.average_break_minutes,
+        recent_break_minutes=request.recent_break_minutes,
+    )
+    agent = StudyAgent()
+    facts = agent.perceive(
+        normalized_request,
+        previous_score=previous_score,
+        break_summary=break_summary,
+    )
+    action = agent.decide(
+        normalized_request,
+        facts,
+        break_summary=break_summary,
+    )
+    recommendation = agent.act(action)
+
     performance = StudentPerformance(
-        topic=request.topic,
+        topic=normalized_topic,
         score=request.score,
         attempts=request.attempts,
         time_spent=request.time_spent,
@@ -228,52 +514,7 @@ def recommend(
     )
     db.add(performance)
     db.commit()
-    db.refresh(performance)
-
-    break_summary = summarize_break_logs(current_user, db, request.topic)
-    return generate_recommendation(request, break_summary=break_summary)
-
-
-@app.get("/recommendations/history", response_model=list[SavedRecommendationItem])
-def read_recommendation_history(
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-) -> list[SavedRecommendationItem]:
-    """Return saved recommendation cards for the current user."""
-    items = (
-        db.query(SavedRecommendation)
-        .filter(SavedRecommendation.user_id == current_user.id)
-        .order_by(SavedRecommendation.created_at.desc(), SavedRecommendation.id.desc())
-        .all()
-    )
-    return [serialize_saved_recommendation(item) for item in items]
-
-
-@app.post(
-    "/recommendations/history",
-    response_model=SavedRecommendationItem,
-    status_code=status.HTTP_201_CREATED,
-)
-def save_recommendation(
-    payload: SavedRecommendationCreate,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-) -> SavedRecommendationItem:
-    """Persist a saved recommendation for the current user."""
-    item = SavedRecommendation(
-        topic=payload.metrics.topic,
-        score=payload.metrics.score,
-        attempts=payload.metrics.attempts,
-        time_spent=payload.metrics.time_spent,
-        level=payload.result.level,
-        recommendation=payload.result.recommendation,
-        reason=payload.result.reason,
-        user_id=current_user.id,
-    )
-    db.add(item)
-    db.commit()
-    db.refresh(item)
-    return serialize_saved_recommendation(item)
+    return recommendation
 
 
 @app.get("/study-sessions", response_model=list[StudySessionResponse])

@@ -3,6 +3,7 @@ import { NavLink } from "react-router-dom";
 const links = [
   { to: "/dashboard", label: "Dashboard", icon: "dashboard" },
   { to: "/recommendation", label: "Weekly Planner", icon: "spark" },
+  { to: "/studio", label: "Lesson Studio", icon: "studio" },
   { to: "/tracker", label: "Study Tracker", icon: "calendar" },
   { to: "/guide", label: "Weekly Progress", icon: "guide" },
 ];
@@ -11,6 +12,7 @@ function SidebarIcon({ icon }) {
   const paths = {
     dashboard: "M4 5h7v6H4zm9 0h7v10h-7zM4 13h7v6H4zm9 4h7v2h-7z",
     spark: "m12 3 2.2 4.8L19 10l-4.8 2.2L12 17l-2.2-4.8L5 10l4.8-2.2Z",
+    studio: "M4 6h16M4 12h10M4 18h16M18 10l2 2-2 2",
     calendar: "M7 3v2M17 3v2M4 8h16M6 5h12a2 2 0 0 1 2 2v11H4V7a2 2 0 0 1 2-2Z",
     guide: "M6 5.5A2.5 2.5 0 0 1 8.5 3H20v15H8.5A2.5 2.5 0 0 0 6 20.5Zm0 0V20.5M9 7h7M9 11h7",
   };

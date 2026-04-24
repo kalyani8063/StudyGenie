@@ -1,7 +1,5 @@
 import { Link } from "react-router-dom";
 
-import { useAuth } from "../state/AuthContext.jsx";
-
 const focusAreas = [
   {
     title: "Weekly Planning",
@@ -24,8 +22,6 @@ const productStats = [
 ];
 
 function LandingPage() {
-  const { isAuthenticated } = useAuth();
-
   return (
     <div className="landing-page">
       <header className="landing-header">
@@ -38,12 +34,8 @@ function LandingPage() {
         </Link>
 
         <nav className="landing-nav" aria-label="Public navigation">
-          <Link className="secondary-link" to={isAuthenticated ? "/dashboard" : "/login"}>
-            {isAuthenticated ? "Dashboard" : "Login"}
-          </Link>
-          <Link className="landing-primary-link" to={isAuthenticated ? "/dashboard" : "/register"}>
-            {isAuthenticated ? "Open workspace" : "Get started"}
-          </Link>
+          <Link className="secondary-link" to="/login">Login</Link>
+          <Link className="landing-primary-link" to="/register">Register</Link>
         </nav>
       </header>
 
@@ -61,12 +53,12 @@ function LandingPage() {
               guidance in one focused workspace.
             </p>
 
-            <div className="cta-row">
-              <Link className="landing-primary-link" to={isAuthenticated ? "/dashboard" : "/register"}>
-                {isAuthenticated ? "Open dashboard" : "Start with StudyGenie"}
+            <div className="cta-row landing-auth-row">
+              <Link className="landing-primary-link" to="/register">
+                Register
               </Link>
-              <Link className="secondary-link" to={isAuthenticated ? "/dashboard" : "/login"}>
-                {isAuthenticated ? "Continue working" : "Log in"}
+              <Link className="secondary-link" to="/login">
+                Login
               </Link>
             </div>
 
@@ -105,14 +97,6 @@ function LandingPage() {
               Build a weekly plan, log study sessions across the week, and use your progress
               signals to decide the next block of work.
             </p>
-            <div className="cta-row">
-              <Link className="landing-primary-link" to={isAuthenticated ? "/dashboard" : "/register"}>
-                {isAuthenticated ? "View workspace" : "Create workspace"}
-              </Link>
-              <Link className="secondary-link" to="/guide">
-                Preview study guide
-              </Link>
-            </div>
           </div>
 
           <img
@@ -127,15 +111,13 @@ function LandingPage() {
             <h2>Move from landing page to a production-style learning workspace in one step.</h2>
           </div>
 
-          <div className="cta-row">
-            <Link className="landing-primary-link" to={isAuthenticated ? "/dashboard" : "/register"}>
-              {isAuthenticated ? "Go to dashboard" : "Get started free"}
+          <div className="cta-row landing-auth-row">
+            <Link className="landing-primary-link" to="/register">
+              Register
             </Link>
-            {!isAuthenticated && (
-              <Link className="secondary-link" to="/login">
-                I already use StudyGenie
-              </Link>
-            )}
+            <Link className="secondary-link" to="/login">
+              Login
+            </Link>
           </div>
         </section>
       </main>

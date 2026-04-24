@@ -1,9 +1,9 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
+import { useStudy } from "../state/StudyContext.jsx";
 import Card from "./Card.jsx";
 import Button from "./ui/Button.jsx";
 import InputField from "./ui/InputField.jsx";
-import { useStudy } from "../state/StudyContext.jsx";
 
 const TIMER_PRESETS = {
   focus: [
@@ -16,6 +16,22 @@ const TIMER_PRESETS = {
     { label: "10 min", minutes: 10 },
     { label: "15 min", minutes: 15 },
   ],
+};
+
+const TIMER_STORAGE_KEY = "studygenie-session-timer";
+
+const defaultTimerState = {
+  timerMode: "focus",
+  topic: "",
+  selectedMinutes: 25,
+  remainingSeconds: 25 * 60,
+  isRunning: false,
+  message: "",
+  startedAt: null,
+  runEndsAt: null,
+  lastCompletedFocus: null,
+  pausedFocusState: null,
+  linkedTaskKey: "",
 };
 
 function formatTime(seconds) {
@@ -47,6 +63,56 @@ function getTrackedMinutes(elapsedSeconds, fallbackMinutes) {
   return Math.max(1, Math.ceil(elapsedSeconds / 60));
 }
 
+function normalizeTimerState(value) {
+  if (!value || typeof value !== "object") {
+    return defaultTimerState;
+  }
+
+  return {
+    ...defaultTimerState,
+    ...value,
+    selectedMinutes: Math.max(1, Number(value.selectedMinutes ?? defaultTimerState.selectedMinutes)),
+    remainingSeconds: Math.max(
+      0,
+      Number(value.remainingSeconds ?? defaultTimerState.remainingSeconds),
+    ),
+    isRunning: Boolean(value.isRunning),
+    message: typeof value.message === "string" ? value.message : "",
+    topic: typeof value.topic === "string" ? value.topic : "",
+    startedAt: value.startedAt ?? null,
+    runEndsAt: value.runEndsAt ?? null,
+    lastCompletedFocus: value.lastCompletedFocus ?? null,
+    pausedFocusState: value.pausedFocusState ?? null,
+    linkedTaskKey: typeof value.linkedTaskKey === "string" ? value.linkedTaskKey : "",
+  };
+}
+
+function readStoredTimerState() {
+  try {
+    const stored = localStorage.getItem(TIMER_STORAGE_KEY);
+    return stored ? normalizeTimerState(JSON.parse(stored)) : defaultTimerState;
+  } catch {
+    return defaultTimerState;
+  }
+}
+
+function getSecondsLeft(timerState, nowMs = Date.now()) {
+  if (!timerState.isRunning || !timerState.runEndsAt) {
+    return Math.max(0, Number(timerState.remainingSeconds));
+  }
+
+  const endTime = new Date(timerState.runEndsAt).getTime();
+  if (Number.isNaN(endTime)) {
+    return Math.max(0, Number(timerState.remainingSeconds));
+  }
+
+  return Math.max(0, Math.ceil((endTime - nowMs) / 1000));
+}
+
+function createRunEnd(seconds) {
+  return new Date(Date.now() + seconds * 1000).toISOString();
+}
+
 function SessionTimerCard({
   className = "",
   subtitle = "Track a study block or break and save it automatically when the timer completes.",
@@ -61,16 +127,10 @@ function SessionTimerCard({
     studySessions,
     weeklyPlans,
   } = useStudy();
-  const [timerMode, setTimerMode] = useState("focus");
-  const [topic, setTopic] = useState("");
-  const [selectedMinutes, setSelectedMinutes] = useState(25);
-  const [secondsLeft, setSecondsLeft] = useState(25 * 60);
-  const [isRunning, setIsRunning] = useState(false);
+  const [timerState, setTimerState] = useState(readStoredTimerState);
   const [isSaving, setIsSaving] = useState(false);
-  const [message, setMessage] = useState("");
-  const [startedAt, setStartedAt] = useState(null);
-  const [lastCompletedFocus, setLastCompletedFocus] = useState(null);
-  const [pausedFocusState, setPausedFocusState] = useState(null);
+  const [tick, setTick] = useState(() => Date.now());
+  const isCompletingRef = useRef(false);
 
   const activeTaskPlan =
     weeklyPlans.find((plan) => plan.id === activeTimerTask?.planId) ?? null;
@@ -81,42 +141,72 @@ function SessionTimerCard({
       ? `${activeTaskPlan.id}:${activePlannedTask.id}`
       : "";
 
-  const totalSeconds = selectedMinutes * 60;
+  const secondsLeft = getSecondsLeft(timerState, tick);
+  const totalSeconds = timerState.selectedMinutes * 60;
   const elapsedSeconds = totalSeconds - secondsLeft;
   const progress = totalSeconds > 0 ? Math.round((elapsedSeconds / totalSeconds) * 100) : 0;
   const latestStudySession = studySessions[0] ?? null;
-  const linkedSession = lastCompletedFocus ?? latestStudySession;
-  const linkedTopic = topic.trim() || linkedSession?.topic || pausedFocusState?.topic || "";
+  const linkedSession = timerState.lastCompletedFocus ?? latestStudySession;
+  const linkedTopic =
+    timerState.topic.trim() ||
+    linkedSession?.topic ||
+    timerState.pausedFocusState?.topic ||
+    "";
   const normalizedLinkedTopic = linkedSession?.topic?.trim().toLowerCase() ?? "";
   const canLinkBreakToSession =
     Boolean(linkedSession) &&
-    (!topic.trim() || topic.trim().toLowerCase() === normalizedLinkedTopic);
-  const trackedMinutes = getTrackedMinutes(elapsedSeconds, selectedMinutes);
-  const targetLabel = `${selectedMinutes} min target`;
-  const canSaveCurrentRun = Boolean(startedAt) && elapsedSeconds > 0;
+    (!timerState.topic.trim() ||
+      timerState.topic.trim().toLowerCase() === normalizedLinkedTopic);
+  const trackedMinutes = getTrackedMinutes(elapsedSeconds, timerState.selectedMinutes);
+  const targetLabel = `${timerState.selectedMinutes} min target`;
+  const canSaveCurrentRun = Boolean(timerState.startedAt) && elapsedSeconds > 0;
   const isGuidedTaskMode = Boolean(activePlannedTask);
-  const isTaskLocked = isGuidedTaskMode || Boolean(pausedFocusState);
+  const isTaskLocked = isGuidedTaskMode || Boolean(timerState.pausedFocusState);
+
+  const applyTimerState = useMemo(
+    () => (updater) => {
+      setTimerState((current) => {
+        const nextState =
+          typeof updater === "function" ? updater(current) : { ...current, ...updater };
+        return normalizeTimerState(nextState);
+      });
+    },
+    [],
+  );
 
   useEffect(() => {
-    if (!isRunning) {
+    localStorage.setItem(TIMER_STORAGE_KEY, JSON.stringify(timerState));
+  }, [timerState]);
+
+  useEffect(() => {
+    if (!timerState.isRunning) {
       return undefined;
     }
 
     const timerId = window.setInterval(() => {
-      setSecondsLeft((current) => Math.max(current - 1, 0));
+      setTick(Date.now());
     }, 1000);
 
     return () => window.clearInterval(timerId);
-  }, [isRunning]);
+  }, [timerState.isRunning]);
 
   useEffect(() => {
-    if (!isRunning || secondsLeft !== 0) {
+    setTick(Date.now());
+  }, [timerState.isRunning, timerState.runEndsAt]);
+
+  useEffect(() => {
+    if (!timerState.isRunning || secondsLeft !== 0 || isCompletingRef.current) {
       return;
     }
 
-    setIsRunning(false);
+    isCompletingRef.current = true;
+    applyTimerState({
+      isRunning: false,
+      remainingSeconds: 0,
+      runEndsAt: null,
+    });
     void handleCompletion();
-  }, [isRunning, secondsLeft]);
+  }, [applyTimerState, secondsLeft, timerState.isRunning]);
 
   useEffect(() => {
     if (!activeTimerTask) {
@@ -128,47 +218,71 @@ function SessionTimerCard({
       return;
     }
 
-    const taskMinutes = Math.max(1, Number(activePlannedTask.duration_minutes) || 25);
-
-    setTimerMode("focus");
-    setTopic(activePlannedTask.topic);
-    setSelectedMinutes(taskMinutes);
-    setSecondsLeft(taskMinutes * 60);
-    setStartedAt(new Date().toISOString());
-    setPausedFocusState(null);
-    setIsRunning(true);
-    setMessage(`Timer started for ${activePlannedTask.topic}. Use pause or take a break anytime.`);
-  }, [activeTaskKey]);
-
-  function restorePausedFocus(nextMessage) {
-    if (!pausedFocusState) {
+    if (timerState.linkedTaskKey === activeTaskKey) {
       return;
     }
 
-    setTimerMode("focus");
-    setTopic(pausedFocusState.topic);
-    setSelectedMinutes(pausedFocusState.selectedMinutes);
-    setSecondsLeft(pausedFocusState.secondsLeft);
-    setStartedAt(pausedFocusState.startedAt);
-    setPausedFocusState(null);
-    setIsRunning(false);
-    setMessage(nextMessage);
+    const taskMinutes = Math.max(1, Number(activePlannedTask.duration_minutes) || 25);
+    const startedAt = new Date().toISOString();
+
+    applyTimerState({
+      timerMode: "focus",
+      topic: activePlannedTask.topic,
+      selectedMinutes: taskMinutes,
+      remainingSeconds: taskMinutes * 60,
+      isRunning: true,
+      startedAt,
+      runEndsAt: createRunEnd(taskMinutes * 60),
+      pausedFocusState: null,
+      linkedTaskKey: activeTaskKey,
+      message: `Timer started for ${activePlannedTask.topic}. Use pause or take a break anytime.`,
+    });
+  }, [
+    activePlannedTask,
+    activeTaskKey,
+    activeTimerTask,
+    applyTimerState,
+    clearActiveTimerTask,
+    timerState.linkedTaskKey,
+  ]);
+
+  function restorePausedFocus(nextMessage) {
+    if (!timerState.pausedFocusState) {
+      return;
+    }
+
+    applyTimerState((current) => ({
+      ...current,
+      timerMode: "focus",
+      topic: current.pausedFocusState.topic,
+      selectedMinutes: current.pausedFocusState.selectedMinutes,
+      remainingSeconds: current.pausedFocusState.remainingSeconds,
+      startedAt: current.pausedFocusState.startedAt,
+      runEndsAt: null,
+      isRunning: false,
+      pausedFocusState: null,
+      linkedTaskKey: current.pausedFocusState.linkedTaskKey ?? current.linkedTaskKey,
+      message: nextMessage,
+    }));
   }
 
   async function handleCompletion() {
     setIsSaving(true);
-    setMessage("");
 
     try {
       const effectiveStartedAt =
-        startedAt ?? new Date(Date.now() - totalSeconds * 1000).toISOString();
+        timerState.startedAt ??
+        new Date(Date.now() - timerState.selectedMinutes * 60 * 1000).toISOString();
       const completedAt = new Date().toISOString();
 
-      if (timerMode === "focus") {
-        const resolvedTopic = activePlannedTask?.topic ?? topic.trim();
+      if (timerState.timerMode === "focus") {
+        const resolvedTopic = activePlannedTask?.topic ?? timerState.topic.trim();
 
         if (!resolvedTopic) {
-          setMessage("Focus block finished. Add a topic so completed study sessions can be saved.");
+          applyTimerState({
+            message:
+              "Focus block finished. Add a topic so completed study sessions can be saved.",
+          });
           return;
         }
 
@@ -187,26 +301,27 @@ function SessionTimerCard({
             completedAt,
             studySessionId: savedSession.id,
           });
-          setMessage(`Completed ${resolvedTopic} and logged ${trackedMinutes} minute(s).`);
-          setLastCompletedFocus(savedSession);
-          setTimerMode("focus");
-          setTopic("");
-          setSelectedMinutes(25);
-          setSecondsLeft(25 * 60);
-          setStartedAt(null);
+
+          applyTimerState({
+            ...defaultTimerState,
+            message: `Completed ${resolvedTopic} and logged ${trackedMinutes} minute(s).`,
+            lastCompletedFocus: savedSession,
+          });
           return;
         }
 
-        setMessage(`Logged ${trackedMinutes} minute(s) of study for ${resolvedTopic}.`);
-        setLastCompletedFocus(savedSession);
-        setTimerMode("break");
-        setSelectedMinutes(5);
-        setSecondsLeft(5 * 60);
-        setStartedAt(null);
+        applyTimerState({
+          ...defaultTimerState,
+          timerMode: "break",
+          selectedMinutes: 5,
+          remainingSeconds: 5 * 60,
+          lastCompletedFocus: savedSession,
+          message: `Logged ${trackedMinutes} minute(s) of study for ${resolvedTopic}.`,
+        });
         return;
       }
 
-      const breakTopic = pausedFocusState?.topic || linkedTopic || null;
+      const breakTopic = timerState.pausedFocusState?.topic || linkedTopic || null;
       await addBreakLog({
         topic: breakTopic,
         duration_minutes: trackedMinutes,
@@ -217,7 +332,7 @@ function SessionTimerCard({
         study_session_id: canLinkBreakToSession ? linkedSession?.id ?? null : null,
       });
 
-      if (pausedFocusState) {
+      if (timerState.pausedFocusState) {
         restorePausedFocus(
           breakTopic
             ? `Break logged. Resume ${breakTopic} when you are ready.`
@@ -226,23 +341,21 @@ function SessionTimerCard({
         return;
       }
 
-      setMessage(
-        breakTopic
+      applyTimerState({
+        ...defaultTimerState,
+        message: breakTopic
           ? `Logged a ${trackedMinutes}-minute ${getBreakType(trackedMinutes)} break after ${breakTopic}.`
           : `Logged a ${trackedMinutes}-minute ${getBreakType(trackedMinutes)} break for future planning insights.`,
-      );
-      setTimerMode("focus");
-      setSelectedMinutes(25);
-      setSecondsLeft(25 * 60);
-      setStartedAt(null);
-      setLastCompletedFocus(null);
+      });
     } catch {
-      setMessage(
-        timerMode === "focus"
-          ? "The timer finished, but the study session could not be saved."
-          : "The timer finished, but the break log could not be saved.",
-      );
+      applyTimerState({
+        message:
+          timerState.timerMode === "focus"
+            ? "The timer finished, but the study session could not be saved."
+            : "The timer finished, but the break log could not be saved.",
+      });
     } finally {
+      isCompletingRef.current = false;
       setIsSaving(false);
     }
   }
@@ -253,67 +366,93 @@ function SessionTimerCard({
     }
 
     const nextMinutes = TIMER_PRESETS[nextMode][0].minutes;
-    setTimerMode(nextMode);
-    setSelectedMinutes(nextMinutes);
-    setSecondsLeft(nextMinutes * 60);
-    setIsRunning(false);
-    setStartedAt(null);
-    setMessage("");
+    applyTimerState((current) => ({
+      ...current,
+      timerMode: nextMode,
+      selectedMinutes: nextMinutes,
+      remainingSeconds: nextMinutes * 60,
+      isRunning: false,
+      startedAt: null,
+      runEndsAt: null,
+      message: "",
+    }));
   }
 
   function choosePreset(minutes) {
-    if (isTaskLocked && timerMode === "focus") {
+    if (isTaskLocked && timerState.timerMode === "focus") {
       return;
     }
 
-    setSelectedMinutes(minutes);
-    setSecondsLeft(minutes * 60);
-    setIsRunning(false);
-    setStartedAt(null);
-    setMessage("");
+    applyTimerState((current) => ({
+      ...current,
+      selectedMinutes: minutes,
+      remainingSeconds: minutes * 60,
+      isRunning: false,
+      startedAt: null,
+      runEndsAt: null,
+      message: "",
+    }));
   }
 
   function resetTimer() {
-    setSecondsLeft(selectedMinutes * 60);
-    setIsRunning(false);
-    setStartedAt(null);
-    setMessage("");
+    applyTimerState((current) => ({
+      ...current,
+      remainingSeconds: current.selectedMinutes * 60,
+      isRunning: false,
+      startedAt: null,
+      runEndsAt: null,
+      message: "",
+    }));
   }
 
   function handleRunningToggle() {
-    setIsRunning((current) => {
-      if (!current && !startedAt) {
-        setStartedAt(new Date().toISOString());
-      }
+    if (timerState.isRunning) {
+      applyTimerState((current) => ({
+        ...current,
+        isRunning: false,
+        remainingSeconds: getSecondsLeft(current, Date.now()),
+        runEndsAt: null,
+      }));
+      return;
+    }
 
-      return !current;
-    });
+    const currentSecondsLeft = Math.max(1, secondsLeft);
+    applyTimerState((current) => ({
+      ...current,
+      isRunning: true,
+      startedAt: current.startedAt ?? new Date().toISOString(),
+      remainingSeconds: currentSecondsLeft,
+      runEndsAt: createRunEnd(currentSecondsLeft),
+    }));
   }
 
   function handleTimedBreak() {
-    if (timerMode !== "focus") {
+    if (timerState.timerMode !== "focus") {
       return;
     }
 
     const nextMinutes = TIMER_PRESETS.break[0].minutes;
-    const pausedTopic = activePlannedTask?.topic ?? topic.trim();
+    const pausedTopic = activePlannedTask?.topic ?? timerState.topic.trim();
 
-    setPausedFocusState({
-      selectedMinutes,
-      secondsLeft,
-      startedAt,
-      topic: pausedTopic,
-    });
-    setTimerMode("break");
-    setSelectedMinutes(nextMinutes);
-    setSecondsLeft(nextMinutes * 60);
-    setStartedAt(new Date().toISOString());
-    setIsRunning(true);
-    setMessage(
-      pausedTopic
+    applyTimerState((current) => ({
+      ...current,
+      pausedFocusState: {
+        selectedMinutes: current.selectedMinutes,
+        remainingSeconds: secondsLeft,
+        startedAt: current.startedAt,
+        topic: pausedTopic,
+        linkedTaskKey: current.linkedTaskKey,
+      },
+      timerMode: "break",
+      selectedMinutes: nextMinutes,
+      remainingSeconds: nextMinutes * 60,
+      startedAt: new Date().toISOString(),
+      runEndsAt: createRunEnd(nextMinutes * 60),
+      isRunning: true,
+      message: pausedTopic
         ? `Break timer started. ${pausedTopic} is paused for now.`
         : "Break timer started. Your focus timer is paused for now.",
-    );
+    }));
   }
 
   return (
@@ -321,7 +460,7 @@ function SessionTimerCard({
       <div className="timer-layout">
         <div className="timer-face timer-face-large">
           <p className="timer-mode-label">
-            {timerMode === "focus" ? "Study block" : "Break block"}
+            {timerState.timerMode === "focus" ? "Study block" : "Break block"}
           </p>
           <span>{formatTime(secondsLeft)}</span>
           <p className="muted-copy">
@@ -338,14 +477,14 @@ function SessionTimerCard({
             <Button
               disabled={isTaskLocked}
               onClick={() => chooseMode("focus")}
-              variant={timerMode === "focus" ? "primary" : "ghost"}
+              variant={timerState.timerMode === "focus" ? "primary" : "ghost"}
             >
               Study timer
             </Button>
             <Button
               disabled={isTaskLocked}
               onClick={() => chooseMode("break")}
-              variant={timerMode === "break" ? "primary" : "ghost"}
+              variant={timerState.timerMode === "break" ? "primary" : "ghost"}
             >
               Break timer
             </Button>
@@ -361,17 +500,21 @@ function SessionTimerCard({
             label="Topic"
             placeholder="Physics revision"
             type="text"
-            value={topic}
-            onChange={(event) => setTopic(event.target.value)}
+            value={timerState.topic}
+            onChange={(event) =>
+              applyTimerState({
+                topic: event.target.value,
+              })
+            }
           />
 
           <div className="preset-row">
-            {TIMER_PRESETS[timerMode].map((preset) => (
+            {TIMER_PRESETS[timerState.timerMode].map((preset) => (
               <Button
-                disabled={isTaskLocked && timerMode === "focus"}
-                key={`${timerMode}-${preset.minutes}`}
+                disabled={isTaskLocked && timerState.timerMode === "focus"}
+                key={`${timerState.timerMode}-${preset.minutes}`}
                 onClick={() => choosePreset(preset.minutes)}
-                variant={selectedMinutes === preset.minutes ? "secondary" : "ghost"}
+                variant={timerState.selectedMinutes === preset.minutes ? "secondary" : "ghost"}
               >
                 {preset.label}
               </Button>
@@ -380,13 +523,17 @@ function SessionTimerCard({
 
           <div className="preset-row">
             <Button disabled={isSaving} onClick={handleRunningToggle}>
-              {isRunning ? "Pause" : "Start"}
+              {timerState.isRunning ? "Pause" : "Start"}
             </Button>
             <Button
               className="secondary-button"
               disabled={!canSaveCurrentRun || isSaving}
               onClick={() => {
-                setIsRunning(false);
+                applyTimerState({
+                  isRunning: false,
+                  remainingSeconds: secondsLeft,
+                  runEndsAt: null,
+                });
                 void handleCompletion();
               }}
               variant="secondary"
@@ -401,18 +548,18 @@ function SessionTimerCard({
             >
               Reset
             </Button>
-            {timerMode === "focus" ? (
+            {timerState.timerMode === "focus" ? (
               <Button disabled={isSaving} onClick={handleTimedBreak} variant="ghost">
                 Take break
               </Button>
             ) : null}
-            {timerMode === "break" && pausedFocusState ? (
+            {timerState.timerMode === "break" && timerState.pausedFocusState ? (
               <Button
                 disabled={isSaving}
                 onClick={() =>
                   restorePausedFocus(
-                    pausedFocusState.topic
-                      ? `Back to ${pausedFocusState.topic}. Resume when you are ready.`
+                    timerState.pausedFocusState.topic
+                      ? `Back to ${timerState.pausedFocusState.topic}. Resume when you are ready.`
                       : "Break closed. Resume your study task when you are ready.",
                   )
                 }
@@ -430,7 +577,7 @@ function SessionTimerCard({
             </p>
           ) : null}
 
-          {timerMode === "break" && linkedTopic ? (
+          {timerState.timerMode === "break" && linkedTopic ? (
             <p className="muted-copy">
               This break will be saved against <strong>{linkedTopic}</strong> so your pacing data
               stays tied to the study session it follows when possible.
@@ -442,7 +589,7 @@ function SessionTimerCard({
             save study sessions, timed breaks can pause an active task, and finished planned tasks
             flow into the weekly progress view automatically.
           </p>
-          {message ? <p className="success-message">{message}</p> : null}
+          {timerState.message ? <p className="success-message">{timerState.message}</p> : null}
         </div>
       </div>
     </Card>

@@ -2,9 +2,6 @@ import axios from "axios";
 
 const apiClient = axios.create({
   baseURL: import.meta.env.VITE_API_BASE_URL ?? "http://127.0.0.1:8000",
-  headers: {
-    "Content-Type": "application/json",
-  },
 });
 
 apiClient.interceptors.request.use((config) => {
@@ -28,6 +25,13 @@ export function getRecommendation(payload) {
   return apiClient.post("/recommend", payload);
 }
 
+export function summarizePresentationLesson(file) {
+  const formData = new FormData();
+  formData.append("presentation", file);
+
+  return apiClient.post("/lessons/presentation-summary", formData);
+}
+
 export function registerUser(payload) {
   return apiClient.post("/auth/register", payload);
 }
@@ -44,14 +48,6 @@ export function updateProfile(payload) {
   return apiClient.put("/profile", payload);
 }
 
-export function getRecommendationHistory() {
-  return apiClient.get("/recommendations/history");
-}
-
-export function saveRecommendation(payload) {
-  return apiClient.post("/recommendations/history", payload);
-}
-
 export function getStudySessions() {
   return apiClient.get("/study-sessions");
 }
@@ -66,6 +62,14 @@ export function getBreakLogs() {
 
 export function createBreakLog(payload) {
   return apiClient.post("/break-logs", payload);
+}
+
+export function getWeeklyPlansState() {
+  return apiClient.get("/weekly-plans");
+}
+
+export function syncWeeklyPlansState(payload) {
+  return apiClient.put("/weekly-plans/sync", payload);
 }
 
 export default apiClient;

@@ -1,201 +1,94 @@
-from pathlib import Path
-import warnings
+import logging
 
-import joblib
-import numpy as np
-import pandas as pd
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.exceptions import InconsistentVersionWarning
-from sklearn.model_selection import train_test_split
-
-try:
+if __package__:
     from .schemas import RecommendationRequest, RecommendationResponse
-except ImportError:
+else:
     from schemas import RecommendationRequest, RecommendationResponse
 
-MODEL_PATH = Path(__file__).resolve().parent / "model.pkl"
-RANDOM_STATE = 42
 
-_model: RandomForestClassifier | None = None
+logger = logging.getLogger(__name__)
 
 
-def apply_rules(
-    score: float,
-    attempts: int,
-    time_spent: int,
-) -> RecommendationResponse | None:
-    """
-    Apply expert-system rules before falling back to the ML model.
-
-    Returning None means no rule matched and the ML model should be used.
-    """
-    # Rule 1: Very low scores need immediate attention regardless of other data.
-    if score < 30:
-        return RecommendationResponse(
-            level="critical",
-            recommendation="Immediate revision required. Focus on fundamentals.",
-            reason="Rule-based override: extremely low score",
-        )
-
-    # Rule 2: Repeated attempts with a low score suggest the student is struggling.
-    if attempts >= 4 and score < 50:
-        return RecommendationResponse(
-            level="struggling",
-            recommendation="Revise concepts and practice step-by-step problems",
-            reason="Rule-based override: high attempts with low score indicates difficulty",
-        )
-
-    # Rule 3: Low study time with a weak score suggests low engagement.
-    if time_spent < 20 and score < 60:
-        return RecommendationResponse(
-            level="low_engagement",
-            recommendation="Increase study time and review concepts thoroughly",
-            reason="Rule-based override: low study time detected",
-        )
-
-    return None
-
-
-def generate_synthetic_data(row_count: int = 400) -> pd.DataFrame:
-    """
-    Generate synthetic student performance data for the prototype ML model.
-
-    Labels follow the same academic rule that started the prototype:
-    score < 40 is weak, 40-70 is medium, and above 70 is strong.
-    """
-    if not 300 <= row_count <= 500:
-        raise ValueError("row_count must be between 300 and 500")
-
-    rng = np.random.default_rng(RANDOM_STATE)
-
-    scores = rng.integers(0, 101, size=row_count)
-    attempts = rng.integers(1, 6, size=row_count)
-    time_spent = rng.integers(10, 121, size=row_count)
-
-    labels = np.where(scores < 40, "weak", np.where(scores <= 70, "medium", "strong"))
-
-    return pd.DataFrame(
-        {
-            "score": scores,
-            "attempts": attempts,
-            "time_spent": time_spent,
-            "label": labels,
-        }
-    )
-
-
-def train_model() -> RandomForestClassifier:
-    """Train the RandomForest model once and save it to disk."""
-    data = generate_synthetic_data()
-    features = data[["score", "attempts", "time_spent"]]
-    labels = data["label"]
-
-    x_train, x_test, y_train, y_test = train_test_split(
-        features,
-        labels,
-        test_size=0.2,
-        random_state=RANDOM_STATE,
-        stratify=labels,
-    )
-
-    model = RandomForestClassifier(
-        n_estimators=100,
-        random_state=RANDOM_STATE,
-    )
-    model.fit(x_train, y_train)
-
-    accuracy = model.score(x_test, y_test)
-    print(f"Model accuracy: {accuracy:.2f}")
-
-    joblib.dump(model, MODEL_PATH)
-    return model
+FORWARD_RULES = [
+    {
+        "name": "critical_score_implies_help",
+        "if": ["critical_score"],
+        "then": ["low_score", "needs_help", "critical_attention"],
+    },
+    {
+        "name": "low_score_implies_help",
+        "if": ["low_score"],
+        "then": ["needs_help"],
+    },
+    {
+        "name": "needs_help_with_attempts_implies_struggling",
+        "if": ["needs_help", "high_attempts"],
+        "then": ["struggling"],
+    },
+    {
+        "name": "needs_help_with_low_time_implies_low_engagement",
+        "if": ["needs_help", "low_time"],
+        "then": ["low_engagement"],
+    },
+    {
+        "name": "improving_implies_positive_trend",
+        "if": ["improving"],
+        "then": ["positive_trend"],
+    },
+    {
+        "name": "positive_trend_with_effort_implies_recovery",
+        "if": ["positive_trend", "strong_time_investment"],
+        "then": ["strong_recovery"],
+    },
+    {
+        "name": "high_score_with_effort_implies_mastery",
+        "if": ["high_score", "strong_time_investment"],
+        "then": ["mastery"],
+    },
+    {
+        "name": "balanced_breaks_imply_steady_pacing",
+        "if": ["balanced_breaks"],
+        "then": ["steady_pacing"],
+    },
+    {
+        "name": "short_breaks_imply_fatigue_risk",
+        "if": ["short_breaks"],
+        "then": ["fatigue_risk"],
+    },
+    {
+        "name": "long_breaks_imply_momentum_risk",
+        "if": ["long_breaks"],
+        "then": ["momentum_risk"],
+    },
+    {
+        "name": "struggling_with_fatigue_implies_at_risk",
+        "if": ["struggling", "fatigue_risk"],
+        "then": ["at_risk"],
+    },
+    {
+        "name": "mastery_with_steady_pacing_implies_confident_progress",
+        "if": ["mastery", "steady_pacing"],
+        "then": ["confident_progress"],
+    },
+    {
+        "name": "medium_score_with_effort_implies_building_consistency",
+        "if": ["medium_score", "strong_time_investment"],
+        "then": ["building_consistency"],
+    },
+]
 
 
-def load_model() -> RandomForestClassifier:
-    """
-    Load the saved model, training it only if model.pkl does not exist yet.
-
-    The loaded model is cached in memory so API requests reuse the same model.
-    """
-    global _model
-
-    if _model is not None:
-        return _model
-
-    if MODEL_PATH.exists():
-        try:
-            with warnings.catch_warnings():
-                warnings.simplefilter("error", InconsistentVersionWarning)
-                _model = joblib.load(MODEL_PATH)
-        except InconsistentVersionWarning:
-            _model = train_model()
-    else:
-        _model = train_model()
-
-    return _model
-
-
-def build_reason(prediction: str, request: RecommendationRequest) -> str:
-    """Create a short, explainable reason for the model prediction."""
-    if request.score < 40:
-        score_note = "low score"
-    elif request.score <= 70:
-        score_note = "moderate score"
-    else:
-        score_note = "high score"
-
-    attempt_note = "high attempts" if request.attempts >= 4 else "few attempts"
-    time_note = "long study time" if request.time_spent >= 75 else "short study time"
-
-    return f"Predicted as {prediction} because of {score_note}, {attempt_note}, and {time_note}."
-
-
-def resolve_break_summary(
-    request: RecommendationRequest,
-    break_summary: dict[str, float | int | str] | None,
-) -> dict[str, float | int | str] | None:
-    """Use backend-derived break data first, then fall back to the request payload."""
-    if break_summary is not None:
-        return break_summary
-
-    if request.recent_break_count is None or request.average_break_minutes is None:
+def score_delta(current_score: float, previous_score: float | None) -> float | None:
+    if previous_score is None:
         return None
-
-    return {
-        "count": request.recent_break_count,
-        "average_minutes": request.average_break_minutes,
-        "total_minutes": request.recent_break_minutes or 0,
-        "scope": "recent",
-    }
+    return round(current_score - previous_score, 1)
 
 
-def add_break_guidance(
-    recommendation: str,
+def describe_break_pattern(
     break_summary: dict[str, float | int | str] | None,
-) -> str:
-    """Append pacing advice when recent break habits look unbalanced."""
+) -> tuple[str, str]:
     if break_summary is None or int(break_summary.get("count", 0)) == 0:
-        return recommendation
-
-    average_break = float(break_summary.get("average_minutes", 0))
-    total_break = float(break_summary.get("total_minutes", 0))
-
-    if average_break < 5:
-        return f"{recommendation} Add a 5-10 minute recovery break between blocks."
-
-    if average_break > 20 or total_break >= 90:
-        return f"{recommendation} Keep breaks shorter so they do not eat into study momentum."
-
-    return recommendation
-
-
-def append_break_reason(
-    reason: str,
-    break_summary: dict[str, float | int | str] | None,
-) -> str:
-    """Append pacing context to an existing reason string."""
-    if break_summary is None or int(break_summary.get("count", 0)) == 0:
-        return reason
+        return ("", "")
 
     scope = "this topic" if break_summary.get("scope") == "topic" else "recent sessions"
     average_break = float(break_summary.get("average_minutes", 0))
@@ -203,76 +96,278 @@ def append_break_reason(
 
     if average_break < 5:
         return (
-            f"{reason} Break logs for {scope} show very short pauses, which can increase fatigue "
-            "and reduce retention."
+            " Add a 5-10 minute recovery break between study blocks.",
+            f" Breaks for {scope} have been very short, which can increase fatigue.",
         )
 
     if average_break > 20 or total_break >= 90:
         return (
-            f"{reason} Break logs for {scope} are on the long side, so focus momentum may be "
-            "dropping between blocks."
+            " Keep breaks shorter so they do not drain your study momentum.",
+            f" Breaks for {scope} have been longer than ideal, so momentum may be dropping.",
         )
 
-    return f"{reason} Break logs for {scope} show a balanced pacing pattern."
+    return (
+        " Your recent break pacing looks balanced, so keep that rhythm going.",
+        f" Break pacing for {scope} has stayed in a healthy range.",
+    )
 
 
-def build_reason_with_breaks(
-    prediction: str,
-    request: RecommendationRequest,
+def build_response(
+    *,
+    level: RecommendationResponse.__annotations__["level"],
+    recommendation: str,
+    reason: str,
     break_summary: dict[str, float | int | str] | None,
+) -> RecommendationResponse:
+    recommendation_suffix, reason_suffix = describe_break_pattern(break_summary)
+    return RecommendationResponse(
+        level=level,
+        recommendation=f"{recommendation}{recommendation_suffix}",
+        reason=f"{reason}{reason_suffix}",
+    )
+
+
+def build_facts_from_request(
+    request: RecommendationRequest,
+    previous_score: float | None = None,
+    break_summary: dict[str, float | int | str] | None = None,
+) -> dict[str, bool]:
+    delta = score_delta(request.score, previous_score)
+    average_break = (
+        float(break_summary.get("average_minutes", 0))
+        if break_summary is not None and int(break_summary.get("count", 0)) > 0
+        else None
+    )
+    total_break = (
+        float(break_summary.get("total_minutes", 0))
+        if break_summary is not None and int(break_summary.get("count", 0)) > 0
+        else 0
+    )
+
+    return {
+        "critical_score": request.score < 35,
+        "low_score": request.score < 60,
+        "medium_score": 60 <= request.score < 80,
+        "high_score": request.score >= 85,
+        "high_attempts": request.attempts >= 4,
+        "low_time": request.time_spent < 45,
+        "strong_time_investment": request.time_spent >= 60,
+        "improving": delta is not None and delta >= 12 and request.score >= 65,
+        "short_breaks": average_break is not None and average_break < 5,
+        "long_breaks": average_break is not None and (average_break > 20 or total_break >= 90),
+        "balanced_breaks": average_break is not None and 5 <= average_break <= 20 and total_break < 90,
+    }
+
+
+def forward_chain(
+    facts: dict[str, bool],
+    rules: list[dict[str, list[str] | str]],
+) -> tuple[dict[str, bool], set[str], list[dict[str, list[str] | str]]]:
+    inferred: set[str] = set()
+    fired_rules: list[dict[str, list[str] | str]] = []
+    changed = True
+
+    while changed:
+        changed = False
+        for rule in rules:
+            if all(facts.get(condition, False) for condition in rule["if"]):
+                new_conclusions = [
+                    conclusion
+                    for conclusion in rule["then"]
+                    if not facts.get(conclusion, False)
+                ]
+                if not new_conclusions:
+                    continue
+
+                for conclusion in new_conclusions:
+                    facts[conclusion] = True
+                    inferred.add(conclusion)
+
+                fired_rules.append(rule)
+                changed = True
+
+    return facts, inferred, fired_rules
+
+
+def format_reason_trace(
+    fired_rules: list[dict[str, list[str] | str]],
+    selected_fact: str | None,
 ) -> str:
-    """Extend the model reason with break pacing insight when available."""
-    return append_break_reason(build_reason(prediction, request), break_summary)
+    if fired_rules:
+        trace = "; ".join(
+            f"{' + '.join(rule['if'])} -> {', '.join(rule['then'])}" for rule in fired_rules
+        )
+        return f"Derived from facts: {trace}."
+
+    if selected_fact:
+        return f"Derived from facts: {selected_fact}."
+
+    return "Derived from facts: baseline_progress."
+
+
+def choose_action(
+    request: RecommendationRequest,
+    facts: dict[str, bool],
+    fired_rules: list[dict[str, list[str] | str]],
+    break_summary: dict[str, float | int | str] | None = None,
+) -> RecommendationResponse:
+    reason_prefix = ""
+
+    if facts.get("critical_attention"):
+        reason_prefix = format_reason_trace(fired_rules, "critical_score")
+        return build_response(
+            level="critical",
+            recommendation=(
+                f"Pause new topics in {request.topic} and spend the next session rebuilding the "
+                "core concepts with worked examples."
+            ),
+            reason=(
+                f"{reason_prefix} The score is {request.score:.0f}, so fundamentals need "
+                "attention before harder practice will pay off."
+            ),
+            break_summary=break_summary,
+        )
+
+    if facts.get("at_risk") or facts.get("struggling"):
+        reason_prefix = format_reason_trace(fired_rules, "struggling")
+        return build_response(
+            level="struggling",
+            recommendation=(
+                f"Slow {request.topic} down into step-by-step review and correct recent mistakes "
+                "before attempting another full block."
+            ),
+            reason=(
+                f"{reason_prefix} Multiple attempts with weak progress indicate repetition without "
+                "enough correction."
+            ),
+            break_summary=break_summary,
+        )
+
+    if facts.get("low_engagement"):
+        reason_prefix = format_reason_trace(fired_rules, "low_engagement")
+        return build_response(
+            level="low_engagement",
+            recommendation=(
+                f"Increase your next {request.topic} session to 45-60 focused minutes and finish "
+                "one planned task completely."
+            ),
+            reason=(
+                f"{reason_prefix} The current score is being limited more by shallow time "
+                "investment than by lack of attempts."
+            ),
+            break_summary=break_summary,
+        )
+
+    if facts.get("confident_progress") or facts.get("mastery") or facts.get("strong_recovery"):
+        reason_prefix = format_reason_trace(
+            fired_rules,
+            "confident_progress" if facts.get("confident_progress") else "mastery",
+        )
+        return build_response(
+            level="strong",
+            recommendation=(
+                f"You are in a strong place on {request.topic}. Use the next session for harder "
+                "questions, timed recall, or a short mock test."
+            ),
+            reason=(
+                f"{reason_prefix} The score and time investment show strong understanding and a "
+                "healthy study rhythm."
+            ),
+            break_summary=break_summary,
+        )
+
+    if facts.get("needs_help"):
+        reason_prefix = format_reason_trace(fired_rules, "needs_help")
+        return build_response(
+            level="weak",
+            recommendation=(
+                f"Stay with {request.topic}, review the gaps from the last session, and complete "
+                "one clear practice set before moving on."
+            ),
+            reason=(
+                f"{reason_prefix} The foundation is still shaky, so the next study block should "
+                "focus on basics instead of new material."
+            ),
+            break_summary=break_summary,
+        )
+
+    reason_prefix = format_reason_trace(
+        fired_rules,
+        "building_consistency" if facts.get("building_consistency") else "medium_score",
+    )
+    return build_response(
+        level="medium",
+        recommendation=(
+            f"You are building momentum in {request.topic}. Keep the next study block focused on "
+            "one unfinished task and close it fully."
+        ),
+        reason=(
+            f"{reason_prefix} Progress is real but still partial, so consolidation is the best "
+            "next move."
+        ),
+        break_summary=break_summary,
+    )
+
+
+class StudyAgent:
+    def __init__(self, rules: list[dict[str, list[str] | str]] | None = None):
+        self.rules = rules or FORWARD_RULES
+        self.last_action: RecommendationResponse | None = None
+
+    def perceive(
+        self,
+        request: RecommendationRequest,
+        previous_score: float | None = None,
+        break_summary: dict[str, float | int | str] | None = None,
+    ) -> dict[str, bool]:
+        return build_facts_from_request(
+            request,
+            previous_score=previous_score,
+            break_summary=break_summary,
+        )
+
+    def decide(
+        self,
+        request: RecommendationRequest,
+        facts: dict[str, bool],
+        break_summary: dict[str, float | int | str] | None = None,
+    ) -> RecommendationResponse:
+        updated_facts, inferred, fired_rules = forward_chain(dict(facts), self.rules)
+        logger.info(
+            "StudyAgent inferred facts for topic=%s fired_rules=%s inferred=%s true_facts=%s",
+            request.topic,
+            [str(rule["name"]) for rule in fired_rules],
+            sorted(inferred),
+            sorted(fact for fact, value in updated_facts.items() if value),
+        )
+        action = choose_action(
+            request,
+            updated_facts,
+            fired_rules,
+            break_summary=break_summary,
+        )
+        self.last_action = action
+        return action
+
+    def act(self, action: RecommendationResponse) -> RecommendationResponse:
+        self.last_action = action
+        return action
 
 
 def generate_recommendation(
     request: RecommendationRequest,
+    previous_score: float | None = None,
     break_summary: dict[str, float | int | str] | None = None,
 ) -> RecommendationResponse:
-    """Apply expert rules first, then use ML prediction if no rule matches."""
-    resolved_break_summary = resolve_break_summary(request, break_summary)
-    rule_result = apply_rules(
-        score=request.score,
-        attempts=request.attempts,
-        time_spent=request.time_spent,
+    agent = StudyAgent()
+    facts = agent.perceive(
+        request,
+        previous_score=previous_score,
+        break_summary=break_summary,
     )
-    if rule_result is not None:
-        return RecommendationResponse(
-            level=rule_result.level,
-            recommendation=add_break_guidance(
-                rule_result.recommendation,
-                resolved_break_summary,
-            ),
-            reason=append_break_reason(
-                rule_result.reason,
-                resolved_break_summary,
-            ),
-        )
-
-    model = load_model()
-    features = pd.DataFrame(
-        [
-            {
-                "score": request.score,
-                "attempts": request.attempts,
-                "time_spent": request.time_spent,
-            }
-        ]
+    action = agent.decide(
+        request,
+        facts,
+        break_summary=break_summary,
     )
-    prediction = model.predict(features)[0]
-
-    recommendations = {
-        "weak": "Revise basics and watch beginner videos",
-        "medium": "Practice more problems and revise concepts",
-        "strong": "Try advanced problems and mock tests",
-    }
-
-    return RecommendationResponse(
-        level=prediction,
-        recommendation=add_break_guidance(recommendations[prediction], resolved_break_summary),
-        reason=build_reason_with_breaks(prediction, request, resolved_break_summary),
-    )
-
-
-# Load the model once when the module is imported by FastAPI.
-load_model()
+    return agent.act(action)

@@ -13,6 +13,10 @@ const pageMeta = {
     eyebrow: "Weekly Planner",
     title: "Weekly study planner",
   },
+  "/studio": {
+    eyebrow: "Lesson Studio",
+    title: "PowerPoint lesson summary",
+  },
   "/tracker": {
     eyebrow: "Study Tracker",
     title: "Session intelligence",
