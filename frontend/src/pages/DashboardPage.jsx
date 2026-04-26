@@ -1,6 +1,7 @@
 import { Link } from "react-router-dom";
 
 import Card from "../components/Card.jsx";
+import ConceptRetentionPanel from "../components/ConceptRetentionPanel.jsx";
 import EmptyState from "../components/EmptyState.jsx";
 import RecommendationCard from "../components/RecommendationCard.jsx";
 import TodayPlannedTasksCard from "../components/TodayPlannedTasksCard.jsx";
@@ -30,8 +31,15 @@ function getStreak(sessions) {
 
 function DashboardPage() {
   const { user } = useAuth();
-  const { activeWeeklyPlanId, currentRecommendation, recommendationMeta, studySessions, weeklyPlans } =
-    useStudy();
+  const {
+    activeWeeklyPlanId,
+    conceptRetention,
+    conceptRetentionMeta,
+    currentRecommendation,
+    recommendationMeta,
+    studySessions,
+    weeklyPlans,
+  } = useStudy();
   const activePlan =
     weeklyPlans.find((plan) => plan.id === activeWeeklyPlanId) ??
     getPlanForDate(weeklyPlans) ??
@@ -131,8 +139,9 @@ function DashboardPage() {
       <div className="dashboard-grid">
         <TodayPlannedTasksCard
           emptyMessage="No exact-date task from your weekly planner lands on today yet."
+          excludeLessonStudioTasks
           navigateToTracker
-          subtitle="Launch today's scheduled task directly into the study tracker timer."
+          subtitle="Launch today's scheduled task directly into the study tracker timer. Lesson Studio revision blocks now live in the tracker flow instead of this dashboard list."
           title="Today's exact-date tasks"
         />
 
@@ -154,6 +163,14 @@ function DashboardPage() {
           </div>
         </Card>
       </div>
+
+      <ConceptRetentionPanel
+        conceptRetention={conceptRetention}
+        error={conceptRetentionMeta.error}
+        isLoading={conceptRetentionMeta.isLoading}
+        subtitle="Upload lessons in Lesson Studio, then watch concept-level forgetting risk update from your real study behavior."
+        title="Adaptive concept retention graph"
+      />
       {recommendationMeta.error ? <p className="error-message">{recommendationMeta.error}</p> : null}
     </section>
   );

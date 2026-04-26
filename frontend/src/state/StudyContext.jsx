@@ -3,6 +3,7 @@ import { createContext, useContext, useEffect, useMemo, useRef, useState } from 
 import {
   createBreakLog,
   createStudySession,
+  getConceptRetention,
   getBreakLogs,
   getRecommendation,
   getStudySessions,
@@ -18,6 +19,7 @@ const STORAGE_KEY = "studygenie-dashboard-state";
 
 const defaultState = {
   currentRecommendation: null,
+  conceptRetention: null,
   studySessions: [],
   breakLogs: [],
   weeklyPlans: [],
@@ -97,6 +99,76 @@ function normalizeWeeklyPlan(plan) {
   };
 }
 
+function normalizeConceptNode(node) {
+  return {
+    concept_key: node.concept_key,
+    name: node.name,
+    kind: node.kind ?? "section",
+    parent_name: node.parent_name ?? null,
+    summary: node.summary ?? "",
+    difficulty: node.difficulty ?? "medium",
+    importance: Number(node.importance ?? 0),
+    focus_terms: Array.isArray(node.focus_terms) ? node.focus_terms.filter(Boolean) : [],
+    slide_numbers: Array.isArray(node.slide_numbers)
+      ? node.slide_numbers.filter((value) => Number.isFinite(Number(value))).map(Number)
+      : [],
+    related_concepts: Array.isArray(node.related_concepts)
+      ? node.related_concepts.filter(Boolean)
+      : [],
+    mastery_score: node.mastery_score != null ? Number(node.mastery_score) : null,
+    retention_score: node.retention_score != null ? Number(node.retention_score) : null,
+    forgetting_risk: node.forgetting_risk != null ? Number(node.forgetting_risk) : null,
+    evidence_count: node.evidence_count != null ? Number(node.evidence_count) : null,
+    status: node.status ?? null,
+    insight: node.insight ?? "",
+    last_reviewed_at: node.last_reviewed_at ?? null,
+    study_status: node.study_status ?? "not_started",
+    study_count: node.study_count != null ? Number(node.study_count) : 0,
+    total_study_minutes:
+      node.total_study_minutes != null ? Number(node.total_study_minutes) : 0,
+    quiz_attempt_count:
+      node.quiz_attempt_count != null ? Number(node.quiz_attempt_count) : 0,
+    average_quiz_score:
+      node.average_quiz_score != null ? Number(node.average_quiz_score) : null,
+    best_quiz_score: node.best_quiz_score != null ? Number(node.best_quiz_score) : null,
+  };
+}
+
+function normalizeConceptEdge(edge) {
+  return {
+    source_concept_key: edge.source_concept_key,
+    target_concept_key: edge.target_concept_key,
+    source_name: edge.source_name,
+    target_name: edge.target_name,
+    relation_type: edge.relation_type ?? "related",
+    weight: Number(edge.weight ?? 0),
+  };
+}
+
+function normalizeConceptRetention(payload) {
+  if (!payload) {
+    return null;
+  }
+
+  return {
+    lesson_count: Number(payload.lesson_count ?? 0),
+    concept_count: Number(payload.concept_count ?? 0),
+    updated_at: payload.updated_at ?? null,
+    at_risk_concepts: Array.isArray(payload.at_risk_concepts)
+      ? payload.at_risk_concepts.map(normalizeConceptNode)
+      : [],
+    strongest_concepts: Array.isArray(payload.strongest_concepts)
+      ? payload.strongest_concepts.map(normalizeConceptNode)
+      : [],
+    graph_nodes: Array.isArray(payload.graph_nodes)
+      ? payload.graph_nodes.map(normalizeConceptNode)
+      : [],
+    graph_edges: Array.isArray(payload.graph_edges)
+      ? payload.graph_edges.map(normalizeConceptEdge)
+      : [],
+  };
+}
+
 function downloadJson(filename, data) {
   const blob = new Blob([JSON.stringify(data, null, 2)], {
     type: "application/json",
@@ -112,6 +184,20 @@ function downloadJson(filename, data) {
 
 function normalizeTopic(value) {
   return value.trim().toLowerCase();
+}
+
+function isLessonStudioTask(task) {
+  return (task?.notes ?? "").startsWith("From Lesson Studio:");
+}
+
+function getWeeklyTaskDuplicateKey(task) {
+  return [
+    normalizeTopic(task?.topic ?? ""),
+    task?.day ?? "",
+    Number(task?.duration_minutes ?? 0),
+    task?.priority ?? "medium",
+    (task?.notes ?? "").trim(),
+  ].join("|");
 }
 
 function serializeWeeklyTask(task) {
@@ -284,7 +370,12 @@ export function StudyProvider({ children }) {
     isLoading: false,
     error: "",
   });
+  const [conceptRetentionMeta, setConceptRetentionMeta] = useState({
+    isLoading: false,
+    error: "",
+  });
   const [pendingRecommendationTopic, setPendingRecommendationTopic] = useState("");
+  const [conceptRefreshTick, setConceptRefreshTick] = useState(0);
   const lastSyncedWeeklyStateRef = useRef("");
 
   useEffect(() => {
@@ -301,6 +392,7 @@ export function StudyProvider({ children }) {
         ...storedState,
         currentRecommendation:
           current.currentRecommendation ?? storedState.currentRecommendation,
+        conceptRetention: null,
       }));
       lastSyncedWeeklyStateRef.current = "";
       setHasHydratedAccountData(true);
@@ -311,11 +403,13 @@ export function StudyProvider({ children }) {
       try {
         const storedState = readStoredState();
         const storedWeeklyPlans = storedState.weeklyPlans.map(normalizeWeeklyPlan);
-        const [sessionsResponse, breakLogsResponse, weeklyStateResponse] = await Promise.all([
-          getStudySessions(),
-          getBreakLogs(),
-          getWeeklyPlansState(),
-        ]);
+        const [sessionsResponse, breakLogsResponse, weeklyStateResponse, conceptRetentionResponse] =
+          await Promise.all([
+            getStudySessions(),
+            getBreakLogs(),
+            getWeeklyPlansState(),
+            getConceptRetention(),
+          ]);
 
         if (!isActive) {
           return;
@@ -348,6 +442,7 @@ export function StudyProvider({ children }) {
           ...current,
           studySessions: sessionsResponse.data.map(normalizeStudySession),
           breakLogs: breakLogsResponse.data.map(normalizeBreakLog),
+          conceptRetention: normalizeConceptRetention(conceptRetentionResponse.data),
           weeklyPlans,
           activeWeeklyPlanId,
           activeTimerTask: storedState.activeTimerTask ?? null,
@@ -435,6 +530,48 @@ export function StudyProvider({ children }) {
   useEffect(() => {
     let isActive = true;
 
+    if (!isAuthenticated || !hasHydratedAccountData) {
+      setConceptRetentionMeta({ isLoading: false, error: "" });
+      return undefined;
+    }
+
+    async function refreshConceptRetention() {
+      setConceptRetentionMeta({ isLoading: true, error: "" });
+
+      try {
+        const response = await getConceptRetention();
+        if (!isActive) {
+          return;
+        }
+
+        setState((current) => ({
+          ...current,
+          conceptRetention: normalizeConceptRetention(response.data),
+        }));
+        setConceptRetentionMeta({ isLoading: false, error: "" });
+      } catch (error) {
+        if (!isActive) {
+          return;
+        }
+
+        console.error("Failed to load concept retention", error);
+        setConceptRetentionMeta({
+          isLoading: false,
+          error: "Could not refresh concept retention right now.",
+        });
+      }
+    }
+
+    void refreshConceptRetention();
+
+    return () => {
+      isActive = false;
+    };
+  }, [conceptRefreshTick, hasHydratedAccountData, isAuthenticated]);
+
+  useEffect(() => {
+    let isActive = true;
+
     if (!pendingRecommendationTopic) {
       return undefined;
     }
@@ -484,6 +621,9 @@ export function StudyProvider({ children }) {
           },
         }));
         setRecommendationMeta({ isLoading: false, error: "" });
+        if (isAuthenticated) {
+          queueConceptRetentionRefresh();
+        }
       } catch (error) {
         if (!isActive) {
           return;
@@ -507,6 +647,7 @@ export function StudyProvider({ children }) {
       isActive = false;
     };
   }, [
+    isAuthenticated,
     pendingRecommendationTopic,
     state.activeWeeklyPlanId,
     state.breakLogs,
@@ -516,6 +657,10 @@ export function StudyProvider({ children }) {
 
   function queueRecommendation(topic = "") {
     setPendingRecommendationTopic(topic);
+  }
+
+  function queueConceptRetentionRefresh() {
+    setConceptRefreshTick((current) => current + 1);
   }
 
   async function addStudySession(session, options = {}) {
@@ -544,6 +689,10 @@ export function StudyProvider({ children }) {
       ...current,
       studySessions: [savedSession, ...current.studySessions],
     }));
+
+    if (isAuthenticated) {
+      queueConceptRetentionRefresh();
+    }
 
     if (options.refreshRecommendation !== false) {
       queueRecommendation(savedSession.topic);
@@ -579,6 +728,10 @@ export function StudyProvider({ children }) {
       ...current,
       breakLogs: [savedLog, ...current.breakLogs],
     }));
+
+    if (isAuthenticated) {
+      queueConceptRetentionRefresh();
+    }
 
     if (options.refreshRecommendation && savedLog.topic) {
       queueRecommendation(savedLog.topic);
@@ -656,7 +809,7 @@ export function StudyProvider({ children }) {
           return plan;
         }
 
-        savedTask = normalizeWeeklyTask({
+        const normalizedCandidate = normalizeWeeklyTask({
           ...task,
           id: crypto.randomUUID(),
           completed: false,
@@ -665,6 +818,23 @@ export function StudyProvider({ children }) {
           linkedStudySessionId: null,
           createdAt: new Date().toISOString(),
         });
+
+        const existingDuplicate = isLessonStudioTask(normalizedCandidate)
+          ? plan.tasks.find(
+              (existingTask) =>
+                !existingTask.completed &&
+                isLessonStudioTask(existingTask) &&
+                getWeeklyTaskDuplicateKey(existingTask) ===
+                  getWeeklyTaskDuplicateKey(normalizedCandidate),
+            ) ?? null
+          : null;
+
+        if (existingDuplicate) {
+          savedTask = existingDuplicate;
+          return plan;
+        }
+
+        savedTask = normalizedCandidate;
 
         return {
           ...plan,
@@ -787,6 +957,7 @@ export function StudyProvider({ children }) {
     downloadJson("studygenie-progress.json", {
       exportedAt: new Date().toISOString(),
       currentRecommendation: state.currentRecommendation,
+      conceptRetention: state.conceptRetention,
       studySessions: state.studySessions,
       breakLogs: state.breakLogs,
       activeTimerTask: state.activeTimerTask,
@@ -798,6 +969,7 @@ export function StudyProvider({ children }) {
   const value = useMemo(
     () => ({
       ...state,
+      conceptRetentionMeta,
       recommendationMeta,
       addStudySession,
       addBreakLog,
@@ -810,9 +982,10 @@ export function StudyProvider({ children }) {
       completeWeeklyTask,
       removeTaskFromWeeklyPlan,
       refreshRecommendation: queueRecommendation,
+      refreshConceptRetention: queueConceptRetentionRefresh,
       exportProgress,
     }),
-    [recommendationMeta, state],
+    [conceptRetentionMeta, recommendationMeta, state],
   );
 
   return <StudyContext.Provider value={value}>{children}</StudyContext.Provider>;

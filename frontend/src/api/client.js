@@ -72,4 +72,16 @@ export function syncWeeklyPlansState(payload) {
   return apiClient.put("/weekly-plans/sync", payload);
 }
 
+export function getConceptRetention() {
+  return apiClient.get("/concept-retention");
+}
+
+export function logLessonConceptStudy(payload) {
+  return apiClient.post("/lesson-concepts/study", payload);
+}
+
+export function createLessonQuizAttempt(payload) {
+  return apiClient.post("/lesson-quiz-attempts", payload);
+}
+
 export default apiClient;

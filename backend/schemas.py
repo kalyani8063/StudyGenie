@@ -56,16 +56,99 @@ class FlashcardItem(BaseModel):
     back: str
 
 
+class LessonSlideItem(BaseModel):
+    """One extracted slide from the uploaded PowerPoint deck."""
+
+    slide_number: int = Field(..., ge=1)
+    title: str
+    points: list[str] = Field(default_factory=list)
+    text: str
+
+
+class ConceptNodeItem(BaseModel):
+    """One concept node inside the adaptive concept retention graph."""
+
+    concept_key: str
+    name: str
+    kind: Literal["section", "subtopic"]
+    parent_name: str | None = None
+    summary: str
+    difficulty: Literal["easy", "medium", "hard"]
+    importance: float = Field(..., ge=0, le=1)
+    focus_terms: list[str] = Field(default_factory=list)
+    slide_numbers: list[int] = Field(default_factory=list)
+    related_concepts: list[str] = Field(default_factory=list)
+    mastery_score: float | None = Field(default=None, ge=0, le=1)
+    retention_score: float | None = Field(default=None, ge=0, le=1)
+    forgetting_risk: float | None = Field(default=None, ge=0, le=1)
+    evidence_count: int | None = Field(default=None, ge=0)
+    status: Literal["strong", "watch", "at_risk"] | None = None
+    insight: str | None = None
+    last_reviewed_at: datetime | None = None
+    study_status: Literal["not_started", "in_progress", "studied"] | None = None
+    study_count: int | None = Field(default=None, ge=0)
+    total_study_minutes: int | None = Field(default=None, ge=0)
+    quiz_attempt_count: int | None = Field(default=None, ge=0)
+    average_quiz_score: float | None = Field(default=None, ge=0, le=100)
+    best_quiz_score: float | None = Field(default=None, ge=0, le=100)
+
+
+class ConceptEdgeItem(BaseModel):
+    """A directed relationship between two concepts in the lesson graph."""
+
+    source_concept_key: str
+    target_concept_key: str
+    source_name: str
+    target_name: str
+    relation_type: Literal["contains", "progression", "supports", "related"]
+    weight: float = Field(..., ge=0, le=1)
+
+
+class ConceptRetentionOverviewResponse(BaseModel):
+    """Aggregated concept-retention analysis for the current user."""
+
+    lesson_count: int = Field(..., ge=0)
+    concept_count: int = Field(..., ge=0)
+    updated_at: datetime | None = None
+    at_risk_concepts: list[ConceptNodeItem] = Field(default_factory=list)
+    strongest_concepts: list[ConceptNodeItem] = Field(default_factory=list)
+    graph_nodes: list[ConceptNodeItem] = Field(default_factory=list)
+    graph_edges: list[ConceptEdgeItem] = Field(default_factory=list)
+
+
+class ConceptStudyLogCreate(BaseModel):
+    """Request payload for logging study against one lesson concept."""
+
+    lesson_graph_id: int = Field(..., ge=1)
+    concept_key: str = Field(..., min_length=1)
+    minutes: int = Field(default=25, ge=5, le=240)
+    mark_complete: bool = True
+
+
+class LessonQuizAttemptCreate(BaseModel):
+    """Request payload for recording one interactive lesson quiz score."""
+
+    lesson_graph_id: int = Field(..., ge=1)
+    concept_key: str = Field(..., min_length=1)
+    question: str = Field(..., min_length=5)
+    score: float = Field(..., ge=0, le=100)
+    response_label: Literal["not_yet", "partial", "strong", "manual"] = "manual"
+
+
 class PresentationLessonSummaryResponse(BaseModel):
     """Structured high-level summary generated from a PPTX lesson deck."""
 
     title: str
     overview: str
     keywords: list[str]
+    slides: list[LessonSlideItem] = Field(default_factory=list)
     sections: list[LessonSectionItem]
     revise_first: list[LessonSectionItem]
     quiz_questions: list[str]
     flashcards: list[FlashcardItem]
+    concepts: list[ConceptNodeItem] = Field(default_factory=list)
+    concept_edges: list[ConceptEdgeItem] = Field(default_factory=list)
+    saved_lesson_id: int | None = None
     estimated_revision_time: str
     slide_count: int
     source_text_length: int

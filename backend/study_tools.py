@@ -1040,6 +1040,135 @@ def build_flashcards(sections: list[dict[str, object]]) -> list[dict[str, str]]:
     return flashcards[:6]
 
 
+def slugify_concept_key(text: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", clean_fragment(text).lower()).strip("-")
+    return slug or "concept"
+
+
+def build_concept_graph(
+    sections: list[dict[str, object]],
+) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
+    concepts: list[dict[str, object]] = []
+    concept_edges: list[dict[str, object]] = []
+    seen_keys: set[str] = set()
+    previous_section: dict[str, object] | None = None
+
+    for section_index, section in enumerate(sections, start=1):
+        section_title = clean_fragment(str(section["title"]))
+        section_key = f"section-{section_index}-{slugify_concept_key(section_title)}"
+        while section_key in seen_keys:
+            section_key = f"{section_key}-alt"
+        seen_keys.add(section_key)
+
+        subtopics = dedupe_preserve_order([str(item) for item in section.get("subtopics", [])])
+        focus_terms = dedupe_preserve_order([str(item) for item in section.get("focus_terms", [])])[:5]
+        slide_numbers = [int(value) for value in section.get("slide_numbers", [])]
+        section_node = {
+            "concept_key": section_key,
+            "name": section_title,
+            "kind": "section",
+            "parent_name": None,
+            "summary": ensure_sentence(str(section["summary"])),
+            "difficulty": str(section["difficulty"]),
+            "importance": float(section["importance"]),
+            "focus_terms": focus_terms,
+            "slide_numbers": slide_numbers,
+            "related_concepts": subtopics[:4],
+        }
+        concepts.append(section_node)
+
+        if previous_section is not None:
+            concept_edges.append(
+                {
+                    "source_concept_key": str(previous_section["concept_key"]),
+                    "target_concept_key": section_key,
+                    "source_name": str(previous_section["name"]),
+                    "target_name": section_title,
+                    "relation_type": "progression",
+                    "weight": round(
+                        0.34
+                        + (
+                            float(previous_section["importance"])
+                            + float(section_node["importance"])
+                        )
+                        / 4,
+                        2,
+                    ),
+                }
+            )
+            previous_related = dedupe_preserve_order(
+                [*previous_section["related_concepts"], section_title]
+            )[:5]
+            previous_section["related_concepts"] = previous_related
+            section_node["related_concepts"] = dedupe_preserve_order(
+                [*section_node["related_concepts"], str(previous_section["name"])]
+            )[:5]
+
+        previous_section = section_node
+        previous_subtopic: dict[str, object] | None = None
+
+        for subtopic_index, subtopic in enumerate(subtopics, start=1):
+            subtopic_key = f"{section_key}-sub-{subtopic_index}-{slugify_concept_key(subtopic)}"
+            while subtopic_key in seen_keys:
+                subtopic_key = f"{subtopic_key}-alt"
+            seen_keys.add(subtopic_key)
+
+            related_concepts = [section_title]
+            if previous_subtopic is not None:
+                related_concepts.append(str(previous_subtopic["name"]))
+
+            concept_summary = compress_sentence(str(section["summary"]), topic=subtopic, max_words=18)
+            if not concept_summary and section.get("key_points"):
+                concept_summary = compress_sentence(
+                    str(section["key_points"][0]),
+                    topic=subtopic,
+                    max_words=18,
+                )
+
+            subtopic_node = {
+                "concept_key": subtopic_key,
+                "name": subtopic,
+                "kind": "subtopic",
+                "parent_name": section_title,
+                "summary": ensure_sentence(
+                    concept_summary or f"{subtopic} supports the wider idea in {section_title}"
+                ),
+                "difficulty": str(section["difficulty"]),
+                "importance": round(max(0.08, float(section["importance"]) * 0.88), 2),
+                "focus_terms": focus_terms,
+                "slide_numbers": slide_numbers,
+                "related_concepts": dedupe_preserve_order(related_concepts)[:4],
+            }
+            concepts.append(subtopic_node)
+
+            concept_edges.append(
+                {
+                    "source_concept_key": section_key,
+                    "target_concept_key": subtopic_key,
+                    "source_name": section_title,
+                    "target_name": subtopic,
+                    "relation_type": "contains",
+                    "weight": round(max(0.54, float(section["importance"])), 2),
+                }
+            )
+
+            if previous_subtopic is not None:
+                concept_edges.append(
+                    {
+                        "source_concept_key": str(previous_subtopic["concept_key"]),
+                        "target_concept_key": subtopic_key,
+                        "source_name": str(previous_subtopic["name"]),
+                        "target_name": subtopic,
+                        "relation_type": "supports",
+                        "weight": 0.48,
+                    }
+                )
+
+            previous_subtopic = subtopic_node
+
+    return concepts, concept_edges
+
+
 def build_lesson_summary_from_presentation(contents: bytes) -> dict[str, object]:
     extracted = extract_text_from_presentation_bytes(contents)
     slides = extracted["slides"]
@@ -1077,11 +1206,21 @@ def build_lesson_summary_from_presentation(contents: bytes) -> dict[str, object]
     estimated_revision_time = estimate_revision_time(sections)
     quiz_questions = build_quiz_questions(revise_first or sections)
     flashcards = build_flashcards(revise_first or sections)
+    concepts, concept_edges = build_concept_graph(sections)
 
     return {
         "title": lesson_title,
         "overview": overview,
         "keywords": keywords,
+        "slides": [
+            {
+                "slide_number": int(slide["slide_number"]),
+                "title": str(slide["title"]),
+                "points": [str(point) for point in slide.get("points", [])],
+                "text": str(slide["text"]),
+            }
+            for slide in slides
+        ],
         "sections": [
             {
                 "title": section["title"],
@@ -1110,6 +1249,8 @@ def build_lesson_summary_from_presentation(contents: bytes) -> dict[str, object]
         ],
         "quiz_questions": quiz_questions,
         "flashcards": flashcards,
+        "concepts": concepts,
+        "concept_edges": concept_edges,
         "estimated_revision_time": estimated_revision_time,
         "slide_count": slide_count,
         "source_text_length": len(combined_text),

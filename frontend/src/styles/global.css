@@ -1182,7 +1182,10 @@ textarea.field-input {
 
 .study-output-stack,
 .study-list,
-.flashcard-grid {
+.flashcard-grid,
+.concept-panel-stack,
+.concept-card-copy,
+.concept-column {
   display: grid;
   gap: 14px;
 }
@@ -1352,6 +1355,19 @@ textarea.field-input {
 
 .study-points-list {
   display: grid;
+  gap: 6px;
+}
+
+.concept-card,
+.concept-edge-item {
+  gap: 12px;
+}
+
+.concept-card-strong {
+  border-color: rgba(16, 185, 129, 0.24);
+}
+
+.concept-card-copy {
   gap: 6px;
 }
 

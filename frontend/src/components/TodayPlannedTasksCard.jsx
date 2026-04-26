@@ -18,6 +18,46 @@ const priorityTone = {
   light: "default",
 };
 
+function isLessonStudioTask(task) {
+  return (task?.notes ?? "").startsWith("From Lesson Studio:");
+}
+
+function buildTaskDisplayKey(task) {
+  return [
+    task?.topic?.trim().toLowerCase() ?? "",
+    task?.day ?? "",
+    Number(task?.duration_minutes ?? 0),
+    task?.priority ?? "medium",
+    (task?.notes ?? "").trim(),
+  ].join("|");
+}
+
+function collapseDuplicateLessonStudioTasks(tasks, activeTimerTask, todayPlanId) {
+  const seen = new Map();
+
+  tasks.forEach((task) => {
+    const shouldCollapse = isLessonStudioTask(task) && !task.completed;
+    const displayKey = shouldCollapse ? buildTaskDisplayKey(task) : `task:${task.id}`;
+    const existing = seen.get(displayKey);
+
+    if (!existing) {
+      seen.set(displayKey, task);
+      return;
+    }
+
+    const isExistingActive =
+      activeTimerTask?.planId === todayPlanId && activeTimerTask?.taskId === existing.id;
+    const isCurrentActive =
+      activeTimerTask?.planId === todayPlanId && activeTimerTask?.taskId === task.id;
+
+    if (!isExistingActive && isCurrentActive) {
+      seen.set(displayKey, task);
+    }
+  });
+
+  return [...seen.values()];
+}
+
 function formatTaskStatus(task) {
   if (!task.completedAt) {
     return "Ready to start";
@@ -33,6 +73,7 @@ function formatTaskStatus(task) {
 
 function TodayPlannedTasksCard({
   emptyMessage = "No planner tasks are scheduled for today yet.",
+  excludeLessonStudioTasks = false,
   navigateToTracker = false,
   subtitle = "Only tasks whose planned weekday maps to today's exact calendar date appear here.",
   title = "Today's planned tasks",
@@ -41,7 +82,15 @@ function TodayPlannedTasksCard({
   const { activeTimerTask, startWeeklyTaskTimer, weeklyPlans } = useStudy();
   const todayKey = formatDateKey(new Date());
   const todayPlan = getPlanForDate(weeklyPlans, todayKey);
-  const todayTasks = sortTasks(getTasksForDate(todayPlan, todayKey));
+  const todayTasks = collapseDuplicateLessonStudioTasks(
+    sortTasks(
+    getTasksForDate(todayPlan, todayKey).filter((task) =>
+      excludeLessonStudioTasks ? !(task.notes ?? "").startsWith("From Lesson Studio:") : true,
+    ),
+    ),
+    activeTimerTask,
+    todayPlan?.id ?? null,
+  );
 
   function handleLaunch(taskId) {
     if (!todayPlan) {

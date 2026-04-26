@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 
 import Card from "../components/Card.jsx";
+import ConceptRetentionPanel from "../components/ConceptRetentionPanel.jsx";
 import EmptyState from "../components/EmptyState.jsx";
 import RecommendationCard from "../components/RecommendationCard.jsx";
 import Badge from "../components/ui/Badge.jsx";
@@ -41,6 +42,8 @@ function RecommendationPage() {
   const {
     activeWeeklyPlanId,
     addTaskToWeeklyPlan,
+    conceptRetention,
+    conceptRetentionMeta,
     createWeeklyPlan,
     currentRecommendation,
     removeTaskFromWeeklyPlan,
@@ -238,6 +241,14 @@ function RecommendationPage() {
         title="Live study recommendation"
       />
       {recommendationMeta.error ? <p className="error-message">{recommendationMeta.error}</p> : null}
+
+      <ConceptRetentionPanel
+        conceptRetention={conceptRetention}
+        error={conceptRetentionMeta.error}
+        isLoading={conceptRetentionMeta.isLoading}
+        subtitle="Use this signal to decide which concepts deserve space in this week's plan before lower-risk material."
+        title="Concept retention priorities"
+      />
 
       <Card
         subtitle="Switch between saved weeks and keep progress separate for each one."

@@ -115,6 +115,7 @@ function createRunEnd(seconds) {
 
 function SessionTimerCard({
   className = "",
+  onFocusSaved = null,
   subtitle = "Track a study block or break and save it automatically when the timer completes.",
   title = "Session timer",
 }) {
@@ -294,6 +295,16 @@ function SessionTimerCard({
           ended_at: completedAt,
           source: "timer",
         });
+
+        if (typeof onFocusSaved === "function") {
+          onFocusSaved({
+            completedAt,
+            plan: activeTaskPlan ?? null,
+            session: savedSession,
+            task: activePlannedTask ?? null,
+            trackedMinutes,
+          });
+        }
 
         if (activePlannedTask && activeTaskPlan) {
           completeWeeklyTask(activeTaskPlan.id, activePlannedTask.id, {

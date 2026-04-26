@@ -17,6 +17,12 @@ if __package__:
         verify_password,
     )
     from .ai_engine import StudyAgent
+    from .concept_retention import (
+        build_concept_retention_overview,
+        record_concept_study,
+        record_lesson_quiz_attempt,
+        sync_lesson_concept_graph,
+    )
     from .database import (
         PROJECT_ROOT,
         USING_SQLITE,
@@ -30,6 +36,10 @@ if __package__:
         AuthResponse,
         BreakLogCreate,
         BreakLogResponse,
+        ConceptNodeItem,
+        ConceptStudyLogCreate,
+        ConceptRetentionOverviewResponse,
+        LessonQuizAttemptCreate,
         PresentationLessonSummaryResponse,
         RecommendationRequest,
         RecommendationResponse,
@@ -52,6 +62,12 @@ else:
         verify_password,
     )
     from ai_engine import StudyAgent
+    from concept_retention import (
+        build_concept_retention_overview,
+        record_concept_study,
+        record_lesson_quiz_attempt,
+        sync_lesson_concept_graph,
+    )
     from database import (
         PROJECT_ROOT,
         USING_SQLITE,
@@ -65,6 +81,10 @@ else:
         AuthResponse,
         BreakLogCreate,
         BreakLogResponse,
+        ConceptNodeItem,
+        ConceptStudyLogCreate,
+        ConceptRetentionOverviewResponse,
+        LessonQuizAttemptCreate,
         PresentationLessonSummaryResponse,
         RecommendationRequest,
         RecommendationResponse,
@@ -268,6 +288,8 @@ def read_root() -> dict[str, str]:
 @app.post("/lessons/presentation-summary", response_model=PresentationLessonSummaryResponse)
 async def summarize_presentation_lesson(
     presentation: UploadFile = File(...),
+    current_user: User | None = Depends(get_optional_user),
+    db: Session = Depends(get_db),
 ) -> PresentationLessonSummaryResponse:
     """Read a PPTX lesson deck and return a structured main-points summary."""
     filename = (presentation.filename or "").lower()
@@ -292,7 +314,108 @@ async def summarize_presentation_lesson(
     except RuntimeError as exc:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
 
+    saved_lesson_id: int | None = None
+    if current_user is not None:
+        graph = sync_lesson_concept_graph(
+            db,
+            current_user,
+            result,
+            presentation.filename,
+        )
+        saved_lesson_id = graph.id
+
+        retention_snapshot = build_concept_retention_overview(
+            db,
+            current_user,
+            lesson_graph_ids=[graph.id],
+        )
+        retained_nodes = {
+            item["concept_key"]: item
+            for item in retention_snapshot.get("graph_nodes", [])
+        }
+        result["concepts"] = [
+            {
+                **concept,
+                **{
+                    key: value
+                    for key, value in retained_nodes.get(concept["concept_key"], {}).items()
+                    if key
+                    in {
+                        "mastery_score",
+                        "retention_score",
+                        "forgetting_risk",
+                        "evidence_count",
+                        "status",
+                        "insight",
+                        "last_reviewed_at",
+                    }
+                },
+            }
+            for concept in result.get("concepts", [])
+        ]
+
+    result["saved_lesson_id"] = saved_lesson_id
+
     return PresentationLessonSummaryResponse(**result)
+
+
+@app.get("/concept-retention", response_model=ConceptRetentionOverviewResponse)
+def read_concept_retention(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> ConceptRetentionOverviewResponse:
+    """Return adaptive concept-retention signals for the authenticated user's saved lessons."""
+    return ConceptRetentionOverviewResponse(
+        **build_concept_retention_overview(
+            db,
+            current_user,
+        )
+    )
+
+
+@app.post("/lesson-concepts/study", response_model=ConceptNodeItem)
+def log_lesson_concept_study(
+    payload: ConceptStudyLogCreate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Record focused study time for one concept from Lesson Studio."""
+    try:
+        snapshot = record_concept_study(
+            db,
+            current_user,
+            payload.lesson_graph_id,
+            payload.concept_key.strip(),
+            payload.minutes,
+            mark_complete=payload.mark_complete,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+    return snapshot
+
+
+@app.post("/lesson-quiz-attempts", response_model=ConceptNodeItem)
+def create_lesson_quiz_attempt(
+    payload: LessonQuizAttemptCreate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Record one lesson quiz result so weak concepts can be tracked over time."""
+    try:
+        snapshot = record_lesson_quiz_attempt(
+            db,
+            current_user,
+            payload.lesson_graph_id,
+            payload.concept_key.strip(),
+            payload.question,
+            payload.score,
+            payload.response_label,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+    return snapshot
 
 
 @app.post("/auth/register", response_model=AuthResponse, status_code=status.HTTP_201_CREATED)
